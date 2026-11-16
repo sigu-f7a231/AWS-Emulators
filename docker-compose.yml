@@ -1,0 +1,75 @@
+services:
+  # 1. Official AWS Emulator container
+  aws-emulator:
+    build:
+      context: ./emulator
+      args:
+        ARCH: ${EMULATOR_ARCH:-aarch64}
+    container_name: aws-emulator
+    command: ["-p", "9297", "--auth", "off"]
+    ports:
+      - "9297:9297"
+    environment:
+      - HOME=/root
+      - EMULATOR_TELEMETRY=off
+    # データ（S3 / SQS / SNS / DynamoDB）はコンテナ内 /root/.aws/emulator にだけ保存する。
+    # ボリュームを使わないので、docker compose down（コンテナ削除）でデータは消える。
+    restart: unless-stopped
+
+  # 2. Python environment & Backend API (FastAPI + Boto3)
+  python:
+    build:
+      context: ./python
+    container_name: aws-emulator-python
+    ports:
+      - "${PYTHON_PORT:-8002}:8000"
+    environment:
+      - AWS_ENDPOINT_URL=https://aws-emulator:9297
+      - AWS_REGION=us-east-1
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=emulator
+      - AWS_SECRET_ACCESS_KEY=emulator
+      - AWS_EC2_METADATA_DISABLED=true
+      - AWS_DISABLE_HOST_PREFIX_INJECTION=true
+      - PYTHONUNBUFFERED=1
+      # アプリのデータ（メール履歴・SMTP 設定・DynamoDB のテーブル定義）はコンテナ内 /data に保存。
+      # /data はマウントしていないので、コンテナを削除すると消える。
+      - APP_DATA_DIR=/data
+      # SMTP 初期値（画面で保存した設定はコンテナ内に保存され、コンテナ削除で消える。残したい設定はここ/.env に書く）
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-aws-emulator@local.test}
+    volumes:
+      - ./python:/app   # ソースコードのみ（ホットリロード用）。データは書き込まない
+    depends_on:
+      - aws-emulator
+    restart: unless-stopped
+
+  # 3. Frontend Web Console (Vite + React)
+  frontend:
+    build:
+      context: ./frontend
+    container_name: aws-emulator-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_BACKEND_URL=http://python:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - python
+    restart: unless-stopped
+
+  # 4. (任意) ローカル SMTP サーバー兼メール受信ビューア
+  #    起動: docker compose --profile mailpit up -d
+  #    受信確認: http://localhost:8025 / SMTP 設定: ホスト mailpit・ポート 1025・認証なし
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: aws-emulator-mailpit
+    profiles: ["mailpit"]
+    ports:
+      - "8025:8025"
+    restart: unless-stopped

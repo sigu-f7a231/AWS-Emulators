@@ -1,0 +1,3119 @@
+openapi: 3.1.0
+info:
+  title: AWS Emulator Python Bridge & API
+  description: '
+
+    ローカルの **AWS Emulator**（S3 / SQS / SNS / DynamoDB）を Boto3 で操作する API と、
+
+    メール送信（Mailbox / SMTP）・SNS→Email/SQS パイプラインを提供します。
+
+
+    ### 構成
+
+    エンドポイントは **CRUD ごと**にグループ分けしています（ソースも `app/routers/<crud>/` に分割）。
+
+    各エンドポイントの概要の先頭 `[S3]` `[SQS]` などが対象サービスです。
+
+
+    | グループ | 内容 |
+
+    | :--- | :--- |
+
+    | **Create** | リソース・メッセージ・メールを新しく作る |
+
+    | **Read** | 状態を変えない参照・検索・接続確認 |
+
+    | **Update** | 既存リソースや設定の更新（upsert を含む） |
+
+    | **Delete** | 削除 |
+
+
+    ### エラー
+
+    失敗時は HTTP 500 と `{"detail": "エラー内容"}` を返します。入力値の不備は 422 です。
+
+    '
+  version: 1.2.0
+servers:
+- url: http://localhost:8002
+  description: ホスト PC から（docker compose の公開ポート）
+- url: http://python:8000
+  description: docker compose ネットワーク内（frontend コンテナから）
+paths:
+  /api/health:
+    get:
+      tags:
+      - Read
+      summary: '[System] ヘルスチェック'
+      description: Python バックエンド自体が起動しているかを返します。
+      operationId: health_api_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/status:
+    get:
+      tags:
+      - Read
+      summary: '[System] AWS Emulator への接続確認'
+      description: S3 の ListBuckets で疎通を確認します。
+      operationId: get_status_api_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/s3/buckets:
+    get:
+      tags:
+      - Read
+      summary: '[S3] バケット一覧'
+      operationId: list_buckets_api_s3_buckets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[S3] バケットを作成'
+      operationId: create_bucket_api_s3_buckets_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBucketRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/s3/buckets/{bucket_name}/objects:
+    get:
+      tags:
+      - Read
+      summary: '[S3] オブジェクト一覧'
+      operationId: list_objects_api_s3_buckets__bucket_name__objects_get
+      parameters:
+      - name: bucket_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bucket Name
+          description: バケット名
+        description: バケット名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[S3] オブジェクトをアップロード'
+      description: 同じキーが既にある場合は上書きされます。
+      operationId: put_object_api_s3_buckets__bucket_name__objects_post
+      parameters:
+      - name: bucket_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bucket Name
+          description: バケット名
+        description: バケット名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutObjectRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/s3/buckets/{bucket_name}/objects/{key}:
+    get:
+      tags:
+      - Read
+      summary: '[S3] オブジェクトの内容を取得'
+      description: 'UTF-8 として読めない場合は `is_text: false` とサイズだけを返します。'
+      operationId: get_object_content_api_s3_buckets__bucket_name__objects__key__get
+      parameters:
+      - name: bucket_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bucket Name
+          description: バケット名
+        description: バケット名
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Key
+          description: オブジェクトキー（スラッシュを含んでもよい）
+        description: オブジェクトキー（スラッシュを含んでもよい）
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+      - Delete
+      summary: '[S3] オブジェクトを削除'
+      operationId: delete_object_api_s3_buckets__bucket_name__objects__key__delete
+      parameters:
+      - name: bucket_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bucket Name
+          description: バケット名
+        description: バケット名
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Key
+          description: オブジェクトキー（スラッシュを含んでもよい）
+        description: オブジェクトキー（スラッシュを含んでもよい）
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/s3/objects:
+    get:
+      tags:
+      - Read
+      summary: '[S3] オブジェクト一覧（フラット版）'
+      operationId: list_objects_flat_api_s3_objects_get
+      parameters:
+      - name: bucket
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Bucket
+          description: バケット名
+        description: バケット名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[S3] オブジェクトをアップロード（フラット版）'
+      operationId: put_object_flat_api_s3_objects_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutObjectFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues:
+    get:
+      tags:
+      - Read
+      summary: '[SQS] キュー一覧（メッセージ数つき）'
+      operationId: list_queues_api_sqs_queues_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[SQS] キューを作成'
+      operationId: create_queue_api_sqs_queues_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateQueueRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues/{queue_name}/messages:
+    get:
+      tags:
+      - Read
+      summary: '[SQS] メッセージを受信（削除しない）'
+      description: 可視性タイムアウト 5 秒で受信します。削除はしないので、5 秒後に再び受信できます。
+      operationId: receive_queue_messages_api_sqs_queues__queue_name__messages_get
+      parameters:
+      - name: queue_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Queue Name
+          description: キュー名
+        description: キュー名
+      - name: max_messages
+        in: query
+        required: false
+        schema:
+          type: integer
+          title: Max Messages
+          default: 10
+          minimum: 1
+          maximum: 10
+          description: 最大受信件数（1〜10）
+        description: 最大受信件数（1〜10）
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/messages:
+    get:
+      tags:
+      - Read
+      summary: '[SQS] メッセージを受信（フラット版・削除しない）'
+      operationId: get_messages_flat_api_sqs_messages_get
+      parameters:
+      - name: queue_url
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Queue Url
+          description: キュー URL
+        description: キュー URL
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/topics:
+    get:
+      tags:
+      - Read
+      summary: '[SNS] トピック一覧'
+      operationId: list_topics_api_sns_topics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[SNS] トピックを作成'
+      operationId: create_topic_api_sns_topics_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTopicRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/topics/{topic_arn}/subscriptions:
+    get:
+      tags:
+      - Read
+      summary: '[SNS] トピックのサブスクリプション一覧'
+      operationId: list_subscriptions_api_sns_topics__topic_arn__subscriptions_get
+      parameters:
+      - name: topic_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Topic Arn
+          description: トピック ARN
+        description: トピック ARN
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/emails:
+    get:
+      tags:
+      - Read
+      summary: '[Mail] 送信済みメール一覧'
+      operationId: get_emails_api_emails_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+      - Delete
+      summary: '[Mail] 送信済みメールを全削除'
+      description: Mailbox の記録だけを消します。送信済みの実メールには影響しません。
+      operationId: clear_emails_api_emails_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/mail/list:
+    get:
+      tags:
+      - Read
+      summary: '[Mail] 送信済みメール一覧（フラット版）'
+      operationId: list_mail_api_mail_list_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/overview:
+    get:
+      tags:
+      - Read
+      summary: '[Pipeline] トピック・キュー・購読の全体像'
+      operationId: get_pipeline_overview_api_api_pipeline_overview_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/list:
+    get:
+      tags:
+      - Read
+      summary: '[Pipeline] パイプライン一覧（フラット版）'
+      operationId: list_pipelines_api_pipeline_list_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/smtp/config:
+    get:
+      tags:
+      - Read
+      summary: '[SMTP] 設定を取得'
+      description: パスワードは返さず、`has_password` で保存済みかどうかだけを返します。
+      operationId: get_smtp_configuration_api_smtp_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmtpConfigResponse'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Update
+      summary: '[SMTP] 設定を保存'
+      description: '`smtp_password` を空にすると保存済みのパスワードを維持します。`clear_password: true`
+        で削除します。'
+      operationId: update_smtp_configuration_api_smtp_config_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmtpConfigRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmtpSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/smtp/test:
+    post:
+      tags:
+      - Read
+      summary: '[SMTP] 接続テスト'
+      description: 'SMTP が未設定・無効なら擬似送信モードとして設定不要で成功（`mode: local`）を返します。有効なら保存済みの設定で接続（＋認証）だけを行います（`mode:
+        smtp`）。メールは送らず、設定も変更しないため Read に分類しています。'
+      operationId: test_smtp_configuration_api_smtp_test_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmtpTestResponse'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/tables:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB] テーブル一覧（詳細つき）'
+      description: 配列をそのまま返します。
+      operationId: get_all_tables_endpoint_api_dynamodb_tables_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/items:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB] アイテム一覧（フラット版・Scan）'
+      operationId: get_items_flat_api_dynamodb_items_get
+      parameters:
+      - name: table
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Table
+          description: テーブル名
+        description: テーブル名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/tables/{table_name}/items:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB] アイテム一覧（Scan）'
+      operationId: get_table_items_endpoint_api_dynamodb_tables__table_name__items_get
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名
+        description: テーブル名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Update
+      summary: '[DynamoDB] アイテムを追加・更新'
+      description: 同じキーのアイテムがあれば上書きします。DB/テーブル設計で作ったテーブルなら、型・必須・外部キーをチェックします（違反は 400）。
+      operationId: put_table_item_endpoint_api_dynamodb_tables__table_name__items_post
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名
+        description: テーブル名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutItemRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/tables/{table_name}/query:
+    post:
+      tags:
+      - Read
+      summary: '[DynamoDB] アイテムを検索（Query）'
+      description: 条件をボディで渡すため POST ですが、データは変更しないので Read に分類しています。
+      operationId: query_table_items_endpoint_api_dynamodb_tables__table_name__query_post
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名
+        description: テーブル名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryItemsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/databases:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB 設計] DB 一覧'
+      operationId: list_databases_api_dynamodb_databases_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[DynamoDB 設計] DB を作成'
+      description: 論理的な DB を作ります。DB 内のテーブルは実テーブル名 `DB名.テーブル名` で作成されます。
+      operationId: create_database_api_dynamodb_databases_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatabaseRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/databases/{db_name}:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB 設計] DB の詳細（テーブル定義とリレーション）'
+      description: 各テーブルの `exists` が false なら、定義はあるが実テーブルがありません（エミュレータのデータを消した場合など）。
+      operationId: get_database_api_dynamodb_databases__db_name__get
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+      - Delete
+      summary: '[DynamoDB 設計] DB を削除'
+      description: テーブルが残っている場合は 400。`cascade=true` なら DB 内の実テーブルもすべて削除します。
+      operationId: delete_database_api_dynamodb_databases__db_name__delete
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      - name: cascade
+        in: query
+        required: false
+        schema:
+          type: boolean
+          title: Cascade
+          default: false
+          description: true なら DB 内のテーブルもすべて削除
+        description: true なら DB 内のテーブルもすべて削除
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/databases/{db_name}/tables/{table_name}:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB 設計] テーブル定義'
+      operationId: get_schema_table_api_dynamodb_databases__db_name__tables__table_name__get
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名（DB 名なし）
+        description: テーブル名（DB 名なし）
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+      - Update
+      summary: '[DynamoDB 設計] テーブル定義を更新'
+      description: 説明・カラム・外部キーを更新します。主キーとインデックスは DynamoDB の制約で変更できません（変更したい場合はテーブルを作り直してください）。
+      operationId: update_schema_table_api_dynamodb_databases__db_name__tables__table_name__put
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名（DB 名なし）
+        description: テーブル名（DB 名なし）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSchemaTableRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+      - Delete
+      summary: '[DynamoDB 設計] テーブルを削除'
+      description: 他のテーブルから外部キーで参照されている場合は 400 になります。
+      operationId: delete_schema_table_api_dynamodb_databases__db_name__tables__table_name__delete
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名（DB 名なし）
+        description: テーブル名（DB 名なし）
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/table-schema:
+    get:
+      tags:
+      - Read
+      summary: '[DynamoDB 設計] 実テーブル名からテーブル定義を取得'
+      description: '`shop.users` のような実テーブル名で引きます。設計管理外のテーブルは 404。'
+      operationId: get_schema_by_physical_api_dynamodb_table_schema_get
+      parameters:
+      - name: table
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Table
+          description: '実テーブル名（例: shop.users）'
+        description: '実テーブル名（例: shop.users）'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues/{queue_name}/send:
+    post:
+      tags:
+      - Create
+      summary: '[SQS] メッセージを送信'
+      operationId: send_queue_message_api_sqs_queues__queue_name__send_post
+      parameters:
+      - name: queue_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Queue Name
+          description: キュー名
+        description: キュー名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/send:
+    post:
+      tags:
+      - Create
+      summary: '[SQS] メッセージを送信（フラット版）'
+      operationId: send_message_flat_api_sqs_send_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues/{queue_name}/send-email-task:
+    post:
+      tags:
+      - Create
+      summary: '[SQS] メール送信タスクをキューに投入'
+      description: '`{"type": "email_task", "to", "subject", "body"}` 形式のメッセージをキューに送ります。'
+      operationId: send_sqs_email_task_api_sqs_queues__queue_name__send_email_task_post
+      parameters:
+      - name: queue_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Queue Name
+          description: キュー名
+        description: キュー名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailTaskRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues/{queue_name}/process-messages:
+    post:
+      tags:
+      - Create
+      summary: '[SQS] メールタスクを処理してメールを送信'
+      description: キューから最大 10 件受信し、メールタスクならメールを送信（作成）します。処理したメッセージはキューから削除されます。
+      operationId: process_sqs_email_tasks_api_sqs_queues__queue_name__process_messages_post
+      parameters:
+      - name: queue_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Queue Name
+          description: キュー名
+        description: キュー名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/topics/{topic_arn}/subscribe:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] サブスクリプションを登録'
+      operationId: subscribe_topic_api_sns_topics__topic_arn__subscribe_post
+      parameters:
+      - name: topic_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Topic Arn
+          description: トピック ARN（`arn:aws:sns:...`。スラッシュを含んでもよい）
+        description: トピック ARN（`arn:aws:sns:...`。スラッシュを含んでもよい）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeTopicRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/topics/{topic_arn}/publish:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] メッセージを発行'
+      description: 発行後、トピックの email サブスクライバー宛てにメールを送信します（SMTP 設定が有効なら実送信）。
+      operationId: publish_topic_message_api_sns_topics__topic_arn__publish_post
+      parameters:
+      - name: topic_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Topic Arn
+          description: トピック ARN（`arn:aws:sns:...`。スラッシュを含んでもよい）
+        description: トピック ARN（`arn:aws:sns:...`。スラッシュを含んでもよい）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishTopicRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/subscribe:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] サブスクリプションを登録（フラット版）'
+      operationId: subscribe_flat_api_sns_subscribe_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/subscribe-sqs:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] SQS キューをトピックに紐付け（フラット版）'
+      operationId: subscribe_sqs_flat_api_sns_subscribe_sqs_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeSqsFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/publish:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] メッセージを発行（フラット版）'
+      description: 発行後、トピックの email サブスクライバー宛てにメールを送信します（SMTP 設定が有効なら実送信）。
+      operationId: publish_flat_api_sns_publish_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/emails/send:
+    post:
+      tags:
+      - Create
+      summary: '[Mail] テストメールを送信'
+      operationId: send_test_email_api_emails_send_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailTaskRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/mail/send:
+    post:
+      tags:
+      - Create
+      summary: '[Mail] メールを送信（フラット版）'
+      description: 'レスポンスの `email.status` が `delivered_smtp (...)` なら SMTP 送信成功、`smtp_error:
+        ...` なら失敗、`delivered_locally` なら擬似送信（Mailbox への記録のみ）です。`delivery_mode: smtp`
+        で SMTP 未設定なら 400。'
+      operationId: send_mail_flat_api_mail_send_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMailRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/subscribe-email:
+    post:
+      tags:
+      - Create
+      summary: '[Pipeline] トピックにメールアドレスを登録'
+      operationId: add_email_subscription_api_api_pipeline_subscribe_email_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeEmailRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/subscribe-sqs:
+    post:
+      tags:
+      - Create
+      summary: '[Pipeline] トピックに SQS キューを紐付け'
+      operationId: add_sqs_subscription_api_api_pipeline_subscribe_sqs_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubscribeSqsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/broadcast:
+    post:
+      tags:
+      - Create
+      summary: '[Pipeline] ブロードキャスト配信'
+      description: SNS に発行し、トピックの全メールサブスクライバーへメール送信、紐付いた全 SQS キューへメッセージ転送します。
+      operationId: broadcast_pipeline_message_api_pipeline_broadcast_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineBroadcastRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/databases/{db_name}/tables:
+    post:
+      tags:
+      - Create
+      summary: '[DynamoDB 設計] DB にテーブルを作成'
+      description: 'カラム定義・主キー（PK / SK）・GSI / LSI・外部キーを指定してテーブルを作成します。
+
+
+        - 主キー・インデックスに使うカラムの型は S / N / B
+
+        - 外部キーは同じ DB 内のテーブル（自分自身も可）の主キーを参照します。参照先が PK+SK ならカラムも 2 つ
+
+        - 作成後、このテーブルへのアイテム保存時に型・必須・外部キーの存在がチェックされます'
+      operationId: create_schema_table_api_dynamodb_databases__db_name__tables_post
+      parameters:
+      - name: db_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Db Name
+          description: DB 名
+        description: DB 名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSchemaTableRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/item:
+    put:
+      tags:
+      - Update
+      summary: '[DynamoDB] アイテムを追加・更新（フラット版）'
+      description: 同じキーのアイテムがあれば上書きします。DB/テーブル設計で作ったテーブルなら、型・必須・外部キーをチェックします（違反は 400）。
+      operationId: put_item_flat_api_dynamodb_item_put
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutItemFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DB / テーブルが見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+      - Delete
+      summary: '[DynamoDB] アイテムを削除（フラット版）'
+      description: DELETE ですがキーをボディ（JSON）で渡します。
+      operationId: delete_item_flat_api_dynamodb_item_delete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteItemFlatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/s3/buckets/{bucket_name}:
+    delete:
+      tags:
+      - Delete
+      summary: '[S3] バケットを削除'
+      description: 空のバケットのみ削除できます。
+      operationId: delete_bucket_api_s3_buckets__bucket_name__delete
+      parameters:
+      - name: bucket_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Bucket Name
+          description: バケット名
+        description: バケット名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sqs/queues/{queue_name}:
+    delete:
+      tags:
+      - Delete
+      summary: '[SQS] キューを削除'
+      operationId: delete_queue_api_sqs_queues__queue_name__delete
+      parameters:
+      - name: queue_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Queue Name
+          description: キュー名
+        description: キュー名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/topics/{topic_arn}:
+    delete:
+      tags:
+      - Delete
+      summary: '[SNS] トピックを削除'
+      operationId: delete_topic_api_sns_topics__topic_arn__delete
+      parameters:
+      - name: topic_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Topic Arn
+          description: トピック ARN
+        description: トピック ARN
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/pipeline/subscriptions/{subscription_arn}:
+    delete:
+      tags:
+      - Delete
+      summary: '[Pipeline] サブスクリプションを解除'
+      operationId: remove_subscription_api_api_pipeline_subscriptions__subscription_arn__delete
+      parameters:
+      - name: subscription_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Subscription Arn
+          description: サブスクリプション ARN
+        description: サブスクリプション ARN
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/tables/{table_name}:
+    delete:
+      tags:
+      - Delete
+      summary: '[DynamoDB] テーブルを削除'
+      description: DB/テーブル設計で管理しているテーブルが他から外部キーで参照されている場合は 400。
+      operationId: delete_table_endpoint_api_dynamodb_tables__table_name__delete
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名
+        description: テーブル名
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/dynamodb/tables/{table_name}/delete-item:
+    post:
+      tags:
+      - Delete
+      summary: '[DynamoDB] アイテムを削除'
+      operationId: delete_table_item_endpoint_api_dynamodb_tables__table_name__delete_item_post
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+          description: テーブル名
+        description: テーブル名
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteItemRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    ColumnDef:
+      properties:
+        name:
+          description: カラム名
+          examples:
+          - user_id
+          title: Name
+          type: string
+        type:
+          default: S
+          description: 型（主キー・インデックスに使うカラムは S / N / B）
+          enum:
+          - S
+          - N
+          - B
+          - BOOL
+          - L
+          - M
+          title: Type
+          type: string
+        required:
+          default: false
+          description: 必須か（主キーは自動で必須）
+          title: Required
+          type: boolean
+        description:
+          default: ''
+          description: 説明
+          title: Description
+          type: string
+      required:
+      - name
+      title: ColumnDef
+      type: object
+    CreateBucketRequest:
+      properties:
+        bucket_name:
+          description: 作成するバケット名
+          examples:
+          - my-local-bucket
+          title: Bucket Name
+          type: string
+      required:
+      - bucket_name
+      title: CreateBucketRequest
+      type: object
+    CreateDatabaseRequest:
+      properties:
+        name:
+          description: DB 名（英数字・_・-。実テーブル名の接頭辞になる）
+          examples:
+          - shop
+          title: Name
+          type: string
+        description:
+          default: ''
+          description: 説明
+          examples:
+          - EC サイトのデータ
+          title: Description
+          type: string
+      required:
+      - name
+      title: CreateDatabaseRequest
+      type: object
+    CreateQueueRequest:
+      properties:
+        queue_name:
+          description: 作成するキュー名
+          examples:
+          - my-queue
+          title: Queue Name
+          type: string
+      required:
+      - queue_name
+      title: CreateQueueRequest
+      type: object
+    CreateSchemaTableRequest:
+      examples:
+      - columns:
+        - name: order_id
+          type: S
+        - name: user_id
+          required: true
+          type: S
+        - name: created_at
+          type: S
+        - name: total
+          type: N
+        description: 注文
+        foreign_keys:
+        - columns:
+          - user_id
+          ref_table: users
+        indexes:
+        - name: user_id-index
+          partition_key: user_id
+          sort_key: created_at
+          type: GSI
+        name: orders
+        partition_key: order_id
+      properties:
+        name:
+          description: テーブル名（DB 内での名前。実テーブル名は `DB名.テーブル名`）
+          examples:
+          - orders
+          title: Name
+          type: string
+        description:
+          default: ''
+          description: 説明
+          title: Description
+          type: string
+        columns:
+          description: カラム定義
+          items:
+            $ref: '#/components/schemas/ColumnDef'
+          title: Columns
+          type: array
+        partition_key:
+          description: パーティションキーにするカラム名
+          examples:
+          - order_id
+          title: Partition Key
+          type: string
+        sort_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: ソートキーにするカラム名（任意）
+          title: Sort Key
+        indexes:
+          description: セカンダリインデックス
+          items:
+            $ref: '#/components/schemas/IndexDef'
+          title: Indexes
+          type: array
+        foreign_keys:
+          description: 他テーブル（または自分自身）の主キーへの参照
+          items:
+            $ref: '#/components/schemas/ForeignKeyDef'
+          title: Foreign Keys
+          type: array
+        billing_mode:
+          default: PAY_PER_REQUEST
+          description: 課金モード
+          enum:
+          - PAY_PER_REQUEST
+          - PROVISIONED
+          title: Billing Mode
+          type: string
+        read_capacity_units:
+          default: 5
+          description: PROVISIONED 時の RCU
+          minimum: 1
+          title: Read Capacity Units
+          type: integer
+        write_capacity_units:
+          default: 5
+          description: PROVISIONED 時の WCU
+          minimum: 1
+          title: Write Capacity Units
+          type: integer
+      required:
+      - name
+      - columns
+      - partition_key
+      title: CreateSchemaTableRequest
+      type: object
+    CreateTopicRequest:
+      properties:
+        topic_name:
+          description: 作成するトピック名
+          examples:
+          - my-topic
+          title: Topic Name
+          type: string
+      required:
+      - topic_name
+      title: CreateTopicRequest
+      type: object
+    DeleteItemFlatRequest:
+      properties:
+        table_name:
+          description: テーブル名
+          examples:
+          - users
+          title: Table Name
+          type: string
+        key_attributes:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          description: 削除するアイテムのキー（DynamoDB 形式）
+          examples:
+          - id:
+              S: user-1
+          title: Key Attributes
+          type: object
+      required:
+      - table_name
+      - key_attributes
+      title: DeleteItemFlatRequest
+      type: object
+    DeleteItemRequest:
+      properties:
+        key:
+          additionalProperties:
+            additionalProperties: true
+            type: object
+          description: 削除するアイテムのキー（DynamoDB 形式）
+          examples:
+          - id:
+              S: user-1
+          title: Key
+          type: object
+      required:
+      - key
+      title: DeleteItemRequest
+      type: object
+    ErrorResponse:
+      properties:
+        detail:
+          description: エラー内容
+          examples:
+          - An error occurred (NoSuchBucket) ...
+          title: Detail
+          type: string
+      required:
+      - detail
+      title: ErrorResponse
+      type: object
+    ForeignKeyDef:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: 外部キー名（省略時は自動）
+          title: Name
+        columns:
+          description: このテーブルのカラム。参照先の主キーと同じ数（PK のみなら 1 つ、PK+SK なら 2 つ）
+          examples:
+          - - user_id
+          items:
+            type: string
+          title: Columns
+          type: array
+        ref_table:
+          description: 参照先テーブル名（同じ DB 内。DB 名は付けない）
+          examples:
+          - users
+          title: Ref Table
+          type: string
+      required:
+      - columns
+      - ref_table
+      title: ForeignKeyDef
+      type: object
+    HTTPValidationError:
+      title: HTTPValidationError
+      type: object
+      properties:
+        detail:
+          title: Detail
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+    IndexDef:
+      properties:
+        name:
+          description: インデックス名（3 文字以上）
+          examples:
+          - user_id-index
+          title: Name
+          type: string
+        type:
+          default: GSI
+          description: GSI（任意のキー）/ LSI（テーブルと同じ PK ＋ 別の SK。テーブルに SK が必要）
+          enum:
+          - GSI
+          - LSI
+          title: Type
+          type: string
+        partition_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: GSI のパーティションキー（LSI では無視）
+          examples:
+          - user_id
+          title: Partition Key
+        sort_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: ソートキー（GSI は任意、LSI は必須）
+          examples:
+          - created_at
+          title: Sort Key
+        projection_type:
+          default: ALL
+          description: 射影
+          enum:
+          - ALL
+          - KEYS_ONLY
+          title: Projection Type
+          type: string
+      required:
+      - name
+      title: IndexDef
+      type: object
+    ItemAttribute:
+      properties:
+        name:
+          description: 属性名
+          examples:
+          - id
+          title: Name
+          type: string
+        type:
+          default: S
+          description: 型（S / N / BOOL / M / L など）
+          title: Type
+          type: string
+        value:
+          description: 値
+          examples:
+          - user-1
+          title: Value
+      required:
+      - name
+      - value
+      title: ItemAttribute
+      type: object
+    PipelineBroadcastRequest:
+      properties:
+        topic_arn:
+          description: 配信元トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        subject:
+          default: 重要なお知らせ
+          description: 件名
+          title: Subject
+          type: string
+        message:
+          description: メッセージ本文
+          examples:
+          - SNSパイプライン経由のブロードキャストメッセージです。
+          title: Message
+          type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 送信方法。local = 擬似送信 / smtp = SMTP で送信（未設定なら 400、SNS への発行もしない）/
+            省略 = SMTP が有効なら SMTP
+          title: Delivery Mode
+      required:
+      - topic_arn
+      - message
+      title: PipelineBroadcastRequest
+      type: object
+    PublishFlatRequest:
+      properties:
+        topic_arn:
+          description: トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        subject:
+          default: 通知
+          description: 件名
+          title: Subject
+          type: string
+        message:
+          description: メッセージ本文
+          examples:
+          - システムメンテナンスのお知らせ
+          title: Message
+          type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 送信方法。local = 擬似送信 / smtp = SMTP で送信（未設定なら 400、SNS への発行もしない）/
+            省略 = SMTP が有効なら SMTP
+          title: Delivery Mode
+      required:
+      - topic_arn
+      - message
+      title: PublishFlatRequest
+      type: object
+    PublishTopicRequest:
+      properties:
+        subject:
+          default: Notification from AWS SNS
+          description: 件名
+          title: Subject
+          type: string
+        message:
+          description: メッセージ本文
+          examples:
+          - システムメンテナンスのお知らせ
+          title: Message
+          type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 送信方法。local = 擬似送信 / smtp = SMTP で送信（未設定なら 400、SNS への発行もしない）/
+            省略 = SMTP が有効なら SMTP
+          title: Delivery Mode
+      required:
+      - message
+      title: PublishTopicRequest
+      type: object
+    PutItemFlatRequest:
+      properties:
+        table_name:
+          description: テーブル名
+          examples:
+          - users
+          title: Table Name
+          type: string
+        attributes:
+          description: アイテムの属性一覧
+          items:
+            $ref: '#/components/schemas/ItemAttribute'
+          title: Attributes
+          type: array
+      required:
+      - table_name
+      - attributes
+      title: PutItemFlatRequest
+      type: object
+    PutItemRequest:
+      properties:
+        attributes:
+          description: アイテムの属性一覧
+          items:
+            $ref: '#/components/schemas/ItemAttribute'
+          title: Attributes
+          type: array
+      required:
+      - attributes
+      title: PutItemRequest
+      type: object
+    PutObjectFlatRequest:
+      properties:
+        bucket_name:
+          description: アップロード先バケット名
+          examples:
+          - my-local-bucket
+          title: Bucket Name
+          type: string
+        object_key:
+          description: オブジェクトキー
+          examples:
+          - docs/hello.txt
+          title: Object Key
+          type: string
+        content:
+          default: ''
+          description: オブジェクトの内容（UTF-8 テキスト）
+          examples:
+          - Hello, S3!
+          title: Content
+          type: string
+      required:
+      - bucket_name
+      - object_key
+      title: PutObjectFlatRequest
+      type: object
+    PutObjectRequest:
+      properties:
+        key:
+          description: オブジェクトキー
+          examples:
+          - docs/hello.txt
+          title: Key
+          type: string
+        content:
+          description: オブジェクトの内容（UTF-8 テキスト）
+          examples:
+          - Hello, S3!
+          title: Content
+          type: string
+      required:
+      - key
+      - content
+      title: PutObjectRequest
+      type: object
+    QueryItemsRequest:
+      properties:
+        key_conditions:
+          additionalProperties: true
+          description: キー条件（属性名 → 値）
+          examples:
+          - id: user-1
+          title: Key Conditions
+          type: object
+        index_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: 使用するインデックス名（省略時はテーブル本体）
+          title: Index Name
+      required:
+      - key_conditions
+      title: QueryItemsRequest
+      type: object
+    SendEmailTaskRequest:
+      properties:
+        to_email:
+          description: 送信先メールアドレス
+          examples:
+          - user@example.com
+          title: To Email
+          type: string
+        subject:
+          description: 件名
+          examples:
+          - テストメール
+          title: Subject
+          type: string
+        body:
+          description: 本文
+          examples:
+          - ローカル環境からのテストメールです。
+          title: Body
+          type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 送信方法。local = 擬似送信 / smtp = SMTP で送信（未設定なら 400）/ 省略 = SMTP が有効なら
+            SMTP
+          title: Delivery Mode
+      required:
+      - to_email
+      - subject
+      - body
+      title: SendEmailTaskRequest
+      type: object
+    SendMailRequest:
+      properties:
+        to:
+          description: 送信先メールアドレス
+          examples:
+          - user@example.com
+          title: To
+          type: string
+        subject:
+          default: ''
+          description: 件名
+          examples:
+          - テストメール
+          title: Subject
+          type: string
+        body:
+          default: ''
+          description: 本文
+          examples:
+          - ローカル環境からのテストメールです。
+          title: Body
+          type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 送信方法。local = 擬似送信 / smtp = SMTP で送信（未設定なら 400）/ 省略 = SMTP が有効なら
+            SMTP
+          title: Delivery Mode
+      required:
+      - to
+      title: SendMailRequest
+      type: object
+    SendMessageFlatRequest:
+      properties:
+        queue_url:
+          description: 送信先キュー URL
+          examples:
+          - https://aws-emulator:9297/000000000000/my-queue
+          title: Queue Url
+          type: string
+        message_body:
+          description: メッセージ本文
+          examples:
+          - '{"hello": "world"}'
+          title: Message Body
+          type: string
+      required:
+      - queue_url
+      - message_body
+      title: SendMessageFlatRequest
+      type: object
+    SendMessageRequest:
+      properties:
+        message_body:
+          description: メッセージ本文
+          examples:
+          - '{"hello": "world"}'
+          title: Message Body
+          type: string
+      required:
+      - message_body
+      title: SendMessageRequest
+      type: object
+    SmtpConfigRequest:
+      properties:
+        smtp_host:
+          description: SMTP ホスト（空なら実送信しない）
+          examples:
+          - smtp.gmail.com
+          title: Smtp Host
+          type: string
+        smtp_port:
+          default: 587
+          description: ポート（465=SSL / それ以外は STARTTLS を試行）
+          examples:
+          - 587
+          title: Smtp Port
+          type: integer
+        smtp_user:
+          default: ''
+          description: 認証ユーザー名（不要なら空）
+          title: Smtp User
+          type: string
+        smtp_password:
+          default: ''
+          description: パスワード。空なら保存済みの値を維持する
+          title: Smtp Password
+          type: string
+        smtp_from:
+          default: aws-emulator@local.test
+          description: 送信元アドレス（From）
+          title: Smtp From
+          type: string
+        is_enabled:
+          default: true
+          description: 実メール送信を有効にするか
+          title: Is Enabled
+          type: boolean
+        clear_password:
+          default: false
+          description: true なら保存済みパスワードを削除する
+          title: Clear Password
+          type: boolean
+      required:
+      - smtp_host
+      title: SmtpConfigRequest
+      type: object
+    SmtpConfigResponse:
+      properties:
+        smtp_host:
+          title: Smtp Host
+          type: string
+        smtp_port:
+          title: Smtp Port
+          type: integer
+        smtp_user:
+          title: Smtp User
+          type: string
+        smtp_password:
+          default: ''
+          description: 常に空文字（パスワードは返さない）
+          title: Smtp Password
+          type: string
+        smtp_from:
+          title: Smtp From
+          type: string
+        is_enabled:
+          title: Is Enabled
+          type: boolean
+        has_password:
+          description: パスワードが保存済みかどうか
+          title: Has Password
+          type: boolean
+      required:
+      - smtp_host
+      - smtp_port
+      - smtp_user
+      - smtp_from
+      - is_enabled
+      - has_password
+      title: SmtpConfigResponse
+      type: object
+    SmtpSaveResponse:
+      properties:
+        message:
+          title: Message
+          type: string
+        config:
+          $ref: '#/components/schemas/SmtpConfigResponse'
+      required:
+      - message
+      - config
+      title: SmtpSaveResponse
+      type: object
+    SmtpTestResponse:
+      properties:
+        ok:
+          description: 接続（＋認証）に成功したか。擬似送信モードでは常に true
+          title: Ok
+          type: boolean
+        mode:
+          description: local = 擬似送信モード（SMTP 未設定・外部に送らない）/ smtp = 実 SMTP
+          examples:
+          - local
+          title: Mode
+          type: string
+        detail:
+          description: 結果の詳細またはエラー内容
+          title: Detail
+          type: string
+      required:
+      - ok
+      - mode
+      - detail
+      title: SmtpTestResponse
+      type: object
+    SubscribeEmailRequest:
+      properties:
+        topic_arn:
+          description: トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        email:
+          description: 登録するメールアドレス
+          examples:
+          - user@example.com
+          title: Email
+          type: string
+      required:
+      - topic_arn
+      - email
+      title: SubscribeEmailRequest
+      type: object
+    SubscribeFlatRequest:
+      properties:
+        topic_arn:
+          description: トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        protocol:
+          default: email
+          description: プロトコル（email / sqs など）
+          title: Protocol
+          type: string
+        endpoint:
+          description: メールアドレスまたは SQS キュー ARN
+          examples:
+          - user@example.com
+          title: Endpoint
+          type: string
+      required:
+      - topic_arn
+      - endpoint
+      title: SubscribeFlatRequest
+      type: object
+    SubscribeSqsFlatRequest:
+      properties:
+        topic_arn:
+          description: トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        queue_url:
+          description: 紐付ける SQS キュー URL
+          examples:
+          - https://aws-emulator:9297/000000000000/my-queue
+          title: Queue Url
+          type: string
+      required:
+      - topic_arn
+      - queue_url
+      title: SubscribeSqsFlatRequest
+      type: object
+    SubscribeSqsRequest:
+      properties:
+        topic_arn:
+          description: トピック ARN
+          examples:
+          - arn:aws:sns:us-east-1:000000000000:my-topic
+          title: Topic Arn
+          type: string
+        queue_name:
+          description: 紐付ける SQS キュー名
+          examples:
+          - my-queue
+          title: Queue Name
+          type: string
+      required:
+      - topic_arn
+      - queue_name
+      title: SubscribeSqsRequest
+      type: object
+    SubscribeTopicRequest:
+      properties:
+        protocol:
+          default: email
+          description: プロトコル（email / sqs など）
+          examples:
+          - email
+          title: Protocol
+          type: string
+        endpoint:
+          description: メールアドレスまたは SQS キュー ARN
+          examples:
+          - user@example.com
+          title: Endpoint
+          type: string
+      required:
+      - endpoint
+      title: SubscribeTopicRequest
+      type: object
+    UpdateSchemaTableRequest:
+      properties:
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: 説明（省略時は変更しない）
+          title: Description
+        columns:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ColumnDef'
+            type: array
+          - type: 'null'
+          default: null
+          description: カラム定義（省略時は変更しない）。主キー・インデックスのカラムは削除・型変更不可
+          title: Columns
+        foreign_keys:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ForeignKeyDef'
+            type: array
+          - type: 'null'
+          default: null
+          description: 外部キー（省略時は変更しない。空配列で全削除）
+          title: Foreign Keys
+      title: UpdateSchemaTableRequest
+      type: object
+    ValidationError:
+      title: ValidationError
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      properties:
+        loc:
+          title: Location
+          type: array
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+tags:
+- name: Create
+  description: 作成系：S3 バケット/オブジェクト、SQS キュー/メッセージ、SNS トピック/購読/発行、メール送信、DynamoDB テーブル
+- name: Read
+  description: 参照系：一覧・取得・検索（DynamoDB Query）、SMTP 設定取得・接続テスト、ヘルスチェック
+- name: Update
+  description: 更新系：SMTP 設定の保存、DynamoDB アイテムの追加・上書き
+- name: Delete
+  description: 削除系：S3 / SQS / SNS / DynamoDB のリソース、購読解除、Mailbox の記録
