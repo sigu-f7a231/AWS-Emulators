@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 class SubscribeEmailRequest(BaseModel):
     topic_arn: str = Field(..., description="トピック ARN", examples=["arn:aws:sns:us-east-1:000000000000:my-topic"])
     email: str = Field(..., description="登録するメールアドレス", examples=["user@example.com"])
+    delivery_mode: Optional[Literal["local", "smtp"]] = Field(
+        None, description="email 購読の確認メールの送信方法。local = 擬似送信 / smtp = SMTP / 省略 = SMTP が有効なら SMTP"
+    )
 
 
 class SubscribeSqsRequest(BaseModel):

@@ -471,6 +471,7 @@ paths:
       tags:
       - Read
       summary: '[SNS] トピック一覧'
+      description: NextToken をたどって全件返します。
       operationId: list_topics_api_sns_topics_get
       responses:
         '200':
@@ -502,13 +503,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -530,6 +527,8 @@ paths:
       tags:
       - Read
       summary: '[SNS] トピックのサブスクリプション一覧'
+      description: '`status` は email / email-json なら `pending_confirmation`（承認待ち）か
+        `confirmed`（承認済み）、その他のプロトコルは常に `confirmed`。'
       operationId: list_subscriptions_api_sns_topics__topic_arn__subscriptions_get
       parameters:
       - name: topic_arn
@@ -726,7 +725,7 @@ paths:
       tags:
       - Read
       summary: '[DynamoDB] テーブル一覧（詳細つき）'
-      description: 配列をそのまま返します。
+      description: DescribeTable の内容（キー・GSI・LSI・課金モードなど）を配列で返します。
       operationId: get_all_tables_endpoint_api_dynamodb_tables_get
       responses:
         '200':
@@ -734,6 +733,59 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+      - Create
+      summary: '[DynamoDB] テーブルを作成'
+      description: 'AWS の CreateTable と同じです。パーティションキー（必須）・ソートキー（任意）・GSI・LSI・課金モードを指定します。
+
+
+        - キーの型は S / N / B。キー以外の属性は定義不要（アイテムはスキーマレス）
+
+        - LSI はテーブルにソートキーが必要で、作成時にしか追加できません
+
+        - テーブル名やキー・インデックスの制約違反は、DynamoDB の `ValidationException` がそのまま返ります'
+      operationId: create_table_endpoint_api_dynamodb_tables_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FullCreateTableRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '500':
           description: AWS Emulator / 内部処理でエラーが発生
           content:
@@ -745,6 +797,8 @@ paths:
       tags:
       - Read
       summary: '[DynamoDB] アイテム一覧（フラット版・Scan）'
+      description: Scan をページングして最大 1000 件返します。各アイテムの `_raw` は DynamoDB JSON（B / BS
+        は base64）。
       operationId: get_items_flat_api_dynamodb_items_get
       parameters:
       - name: table
@@ -761,6 +815,14 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -778,6 +840,8 @@ paths:
       tags:
       - Read
       summary: '[DynamoDB] アイテム一覧（Scan）'
+      description: Scan をページングして最大 1000 件返します。各アイテムの `_raw` は DynamoDB JSON（B / BS
+        は base64）。
       operationId: get_table_items_endpoint_api_dynamodb_tables__table_name__items_get
       parameters:
       - name: table_name
@@ -794,6 +858,14 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -809,8 +881,12 @@ paths:
     post:
       tags:
       - Update
-      summary: '[DynamoDB] アイテムを追加・更新'
-      description: 同じキーのアイテムがあれば上書きします。DB/テーブル設計で作ったテーブルなら、型・必須・外部キーをチェックします（違反は 400）。
+      summary: '[DynamoDB] アイテムを保存（PutItem）'
+      description: 'AWS の PutItem と同じで、同じキーのアイテムがあれば丸ごと置き換えます。キー以外の属性は自由です（スキーマレス）。
+
+
+        `item` に DynamoDB JSON（B / BS は base64）を渡すか、`attributes` に画面の行形式を渡します。キーの欠落や型違いなどは
+        DynamoDB の `ValidationException` がそのまま返ります。'
       operationId: put_table_item_endpoint_api_dynamodb_tables__table_name__items_post
       parameters:
       - name: table_name
@@ -834,13 +910,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -862,7 +934,8 @@ paths:
       tags:
       - Read
       summary: '[DynamoDB] アイテムを検索（Query）'
-      description: 条件をボディで渡すため POST ですが、データは変更しないので Read に分類しています。
+      description: キーの等価条件で Query します。値の型はテーブル / インデックスのキー定義から決まります。条件をボディで渡すため POST
+        ですが、データは変更しないので Read に分類しています。
       operationId: query_table_items_endpoint_api_dynamodb_tables__table_name__query_post
       parameters:
       - name: table_name
@@ -885,385 +958,10 @@ paths:
           content:
             application/json:
               schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /api/dynamodb/databases:
-    get:
-      tags:
-      - Read
-      summary: '[DynamoDB 設計] DB 一覧'
-      operationId: list_databases_api_dynamodb_databases_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    post:
-      tags:
-      - Create
-      summary: '[DynamoDB 設計] DB を作成'
-      description: 論理的な DB を作ります。DB 内のテーブルは実テーブル名 `DB名.テーブル名` で作成されます。
-      operationId: create_database_api_dynamodb_databases_post
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateDatabaseRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /api/dynamodb/databases/{db_name}:
-    get:
-      tags:
-      - Read
-      summary: '[DynamoDB 設計] DB の詳細（テーブル定義とリレーション）'
-      description: 各テーブルの `exists` が false なら、定義はあるが実テーブルがありません（エミュレータのデータを消した場合など）。
-      operationId: get_database_api_dynamodb_databases__db_name__get
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    delete:
-      tags:
-      - Delete
-      summary: '[DynamoDB 設計] DB を削除'
-      description: テーブルが残っている場合は 400。`cascade=true` なら DB 内の実テーブルもすべて削除します。
-      operationId: delete_database_api_dynamodb_databases__db_name__delete
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      - name: cascade
-        in: query
-        required: false
-        schema:
-          type: boolean
-          title: Cascade
-          default: false
-          description: true なら DB 内のテーブルもすべて削除
-        description: true なら DB 内のテーブルもすべて削除
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /api/dynamodb/databases/{db_name}/tables/{table_name}:
-    get:
-      tags:
-      - Read
-      summary: '[DynamoDB 設計] テーブル定義'
-      operationId: get_schema_table_api_dynamodb_databases__db_name__tables__table_name__get
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      - name: table_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Table Name
-          description: テーブル名（DB 名なし）
-        description: テーブル名（DB 名なし）
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    put:
-      tags:
-      - Update
-      summary: '[DynamoDB 設計] テーブル定義を更新'
-      description: 説明・カラム・外部キーを更新します。主キーとインデックスは DynamoDB の制約で変更できません（変更したい場合はテーブルを作り直してください）。
-      operationId: update_schema_table_api_dynamodb_databases__db_name__tables__table_name__put
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      - name: table_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Table Name
-          description: テーブル名（DB 名なし）
-        description: テーブル名（DB 名なし）
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateSchemaTableRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    delete:
-      tags:
-      - Delete
-      summary: '[DynamoDB 設計] テーブルを削除'
-      description: 他のテーブルから外部キーで参照されている場合は 400 になります。
-      operationId: delete_schema_table_api_dynamodb_databases__db_name__tables__table_name__delete
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      - name: table_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Table Name
-          description: テーブル名（DB 名なし）
-        description: テーブル名（DB 名なし）
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /api/dynamodb/table-schema:
-    get:
-      tags:
-      - Read
-      summary: '[DynamoDB 設計] 実テーブル名からテーブル定義を取得'
-      description: '`shop.users` のような実テーブル名で引きます。設計管理外のテーブルは 404。'
-      operationId: get_schema_by_physical_api_dynamodb_table_schema_get
-      parameters:
-      - name: table
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Table
-          description: '実テーブル名（例: shop.users）'
-        description: '実テーブル名（例: shop.users）'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1393,8 +1091,19 @@ paths:
     post:
       tags:
       - Create
-      summary: '[SQS] メールタスクを処理してメールを送信'
-      description: キューから最大 10 件受信し、メールタスクならメールを送信（作成）します。処理したメッセージはキューから削除されます。
+      summary: '[SQS] メールタスクを受信して処理（コンシューマー）'
+      description: 'AWS のコンシューマーと同じ流れで処理します。
+
+
+        1. ReceiveMessage で最大 10 件受信（キューの可視性タイムアウトのあいだ、他からは見えなくなる）
+
+        2. `type: email_task` のメッセージはメールを送信し、**成功したものだけ DeleteMessage** で削除
+
+        3. メールタスク以外・形式不正・送信失敗のメッセージは **削除しない**。可視性タイムアウト後にキューへ戻り、再受信できる（キューに DLQ（RedrivePolicy）があれば、maxReceiveCount
+        回で DLQ へ移る）
+
+
+        SNS から届いたメッセージ（通知 JSON に包まれた形）も中身を取り出して処理します。'
       operationId: process_sqs_email_tasks_api_sqs_queues__queue_name__process_messages_post
       parameters:
       - name: queue_name
@@ -1427,7 +1136,9 @@ paths:
     post:
       tags:
       - Create
-      summary: '[SNS] サブスクリプションを登録'
+      summary: '[SNS] 購読を登録（Subscribe）'
+      description: AWS と同じく、email / email-json の購読は **承認待ち（pending_confirmation）**
+        で作成され、確認メールが送られます。確認メールのリンクを開く（ConfirmSubscription）まで、メッセージは配信されません。sqs などその他のプロトコルはすぐに承認済みになります。
       operationId: subscribe_topic_api_sns_topics__topic_arn__subscribe_post
       parameters:
       - name: topic_arn
@@ -1451,13 +1162,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1478,8 +1185,9 @@ paths:
     post:
       tags:
       - Create
-      summary: '[SNS] メッセージを発行'
-      description: 発行後、トピックの email サブスクライバー宛てにメールを送信します（SMTP 設定が有効なら実送信）。
+      summary: '[SNS] メッセージを発行（Publish）'
+      description: SNS に発行します。SQS への配信は SNS が自動で行います。email は **承認済みの購読にだけ** メールを送ります（承認待ちは
+        `skipped_pending` に入り、送られません）。件名は Subject（空なら `AWS Notification Message`）、本文の末尾に配信停止リンクが付きます。
       operationId: publish_topic_message_api_sns_topics__topic_arn__publish_post
       parameters:
       - name: topic_arn
@@ -1503,13 +1211,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1530,7 +1234,9 @@ paths:
     post:
       tags:
       - Create
-      summary: '[SNS] サブスクリプションを登録（フラット版）'
+      summary: '[SNS] 購読を登録（フラット版・Subscribe）'
+      description: AWS と同じく、email / email-json の購読は **承認待ち（pending_confirmation）**
+        で作成され、確認メールが送られます。確認メールのリンクを開く（ConfirmSubscription）まで、メッセージは配信されません。sqs などその他のプロトコルはすぐに承認済みになります。
       operationId: subscribe_flat_api_sns_subscribe_post
       requestBody:
         required: true
@@ -1545,13 +1251,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1573,6 +1275,7 @@ paths:
       tags:
       - Create
       summary: '[SNS] SQS キューをトピックに紐付け（フラット版）'
+      description: キューを購読させ、キューポリシーに「このトピックからの送信を許可」を **追記** します（既存のポリシーは消しません）。
       operationId: subscribe_sqs_flat_api_sns_subscribe_sqs_post
       requestBody:
         required: true
@@ -1587,13 +1290,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1614,8 +1313,9 @@ paths:
     post:
       tags:
       - Create
-      summary: '[SNS] メッセージを発行（フラット版）'
-      description: 発行後、トピックの email サブスクライバー宛てにメールを送信します（SMTP 設定が有効なら実送信）。
+      summary: '[SNS] メッセージを発行（フラット版・Publish）'
+      description: SNS に発行します。SQS への配信は SNS が自動で行います。email は **承認済みの購読にだけ** メールを送ります（承認待ちは
+        `skipped_pending` に入り、送られません）。件名は Subject（空なら `AWS Notification Message`）、本文の末尾に配信停止リンクが付きます。
       operationId: publish_flat_api_sns_publish_post
       requestBody:
         required: true
@@ -1630,13 +1330,57 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/subscriptions/{subscription_arn}/resend-confirmation:
+    post:
+      tags:
+      - Create
+      summary: '[SNS] 確認メールを再送'
+      description: 承認待ちの email 購読に確認メールを送り直します（AWS コンソールの「Request confirmation」相当）。新しいリンクを発行し、古いリンクは使えなくなります。
+      operationId: resend_confirmation_api_sns_subscriptions__subscription_arn__resend_confirmation_post
+      parameters:
+      - name: subscription_arn
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Subscription Arn
+          description: サブスクリプション ARN
+        description: サブスクリプション ARN
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendConfirmationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1672,13 +1416,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1717,13 +1457,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1745,6 +1481,7 @@ paths:
       tags:
       - Create
       summary: '[Pipeline] トピックにメールアドレスを登録'
+      description: AWS と同じく承認待ちで登録し、確認メールを送ります。承認されるまで配信されません。
       operationId: add_email_subscription_api_api_pipeline_subscribe_email_post
       requestBody:
         required: true
@@ -1759,13 +1496,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1801,13 +1534,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1829,7 +1558,8 @@ paths:
       tags:
       - Create
       summary: '[Pipeline] ブロードキャスト配信'
-      description: SNS に発行し、トピックの全メールサブスクライバーへメール送信、紐付いた全 SQS キューへメッセージ転送します。
+      description: SNS に発行し、**承認済み**のメール購読へメールを送信します（承認待ちは `email_skipped_pending`
+        に入り送られません）。紐付いた SQS キューへは SNS が自動で配信します（このAPIからは送りません）。
       operationId: broadcast_pipeline_message_api_pipeline_broadcast_post
       requestBody:
         required: true
@@ -1844,72 +1574,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '500':
-          description: AWS Emulator / 内部処理でエラーが発生
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /api/dynamodb/databases/{db_name}/tables:
-    post:
-      tags:
-      - Create
-      summary: '[DynamoDB 設計] DB にテーブルを作成'
-      description: 'カラム定義・主キー（PK / SK）・GSI / LSI・外部キーを指定してテーブルを作成します。
-
-
-        - 主キー・インデックスに使うカラムの型は S / N / B
-
-        - 外部キーは同じ DB 内のテーブル（自分自身も可）の主キーを参照します。参照先が PK+SK ならカラムも 2 つ
-
-        - 作成後、このテーブルへのアイテム保存時に型・必須・外部キーの存在がチェックされます'
-      operationId: create_schema_table_api_dynamodb_databases__db_name__tables_post
-      parameters:
-      - name: db_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Db Name
-          description: DB 名
-        description: DB 名
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateSchemaTableRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1930,8 +1597,12 @@ paths:
     put:
       tags:
       - Update
-      summary: '[DynamoDB] アイテムを追加・更新（フラット版）'
-      description: 同じキーのアイテムがあれば上書きします。DB/テーブル設計で作ったテーブルなら、型・必須・外部キーをチェックします（違反は 400）。
+      summary: '[DynamoDB] アイテムを保存（フラット版・PutItem）'
+      description: 'AWS の PutItem と同じで、同じキーのアイテムがあれば丸ごと置き換えます。キー以外の属性は自由です（スキーマレス）。
+
+
+        `item` に DynamoDB JSON（B / BS は base64）を渡すか、`attributes` に画面の行形式を渡します。キーの欠落や型違いなどは
+        DynamoDB の `ValidationException` がそのまま返ります。'
       operationId: put_item_flat_api_dynamodb_item_put
       requestBody:
         required: true
@@ -1946,13 +1617,9 @@ paths:
             application/json:
               schema: {}
         '400':
-          description: 入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: DB / テーブルが見つからない
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
           content:
             application/json:
               schema:
@@ -1972,8 +1639,8 @@ paths:
     delete:
       tags:
       - Delete
-      summary: '[DynamoDB] アイテムを削除（フラット版）'
-      description: DELETE ですがキーをボディ（JSON）で渡します。
+      summary: '[DynamoDB] アイテムを削除（フラット版・DeleteItem）'
+      description: DELETE ですがキー（DynamoDB JSON）をボディで渡します。
       operationId: delete_item_flat_api_dynamodb_item_delete
       requestBody:
         required: true
@@ -1987,6 +1654,53 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/confirm-subscription:
+    post:
+      tags:
+      - Update
+      summary: '[SNS] 購読を承認（ConfirmSubscription）'
+      description: 確認メールのリンクのトークンで、承認待ちの email 購読を承認済みにします。リンクの有効期限は AWS と同じ 3 日です。
+      operationId: confirm_subscription_api_sns_confirm_subscription_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmSubscriptionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -2071,6 +1785,7 @@ paths:
       tags:
       - Delete
       summary: '[SNS] トピックを削除'
+      description: トピックの購読もすべて削除されます。
       operationId: delete_topic_api_sns_topics__topic_arn__delete
       parameters:
       - name: topic_arn
@@ -2087,6 +1802,53 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: AWS Emulator / 内部処理でエラーが発生
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sns/unsubscribe:
+    post:
+      tags:
+      - Delete
+      summary: '[SNS] 配信停止リンクで購読を解除（Unsubscribe）'
+      description: 通知メールの配信停止リンクから呼ばれます。DELETE ではなく POST ですが、購読を削除するので Delete に分類しています。
+      operationId: unsubscribe_with_token_api_sns_unsubscribe_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeWithTokenRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -2136,8 +1898,7 @@ paths:
     delete:
       tags:
       - Delete
-      summary: '[DynamoDB] テーブルを削除'
-      description: DB/テーブル設計で管理しているテーブルが他から外部キーで参照されている場合は 400。
+      summary: '[DynamoDB] テーブルを削除（DeleteTable）'
       operationId: delete_table_endpoint_api_dynamodb_tables__table_name__delete
       parameters:
       - name: table_name
@@ -2154,6 +1915,14 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -2170,7 +1939,7 @@ paths:
     post:
       tags:
       - Delete
-      summary: '[DynamoDB] アイテムを削除'
+      summary: '[DynamoDB] アイテムを削除（DeleteItem）'
       operationId: delete_table_item_endpoint_api_dynamodb_tables__table_name__delete_item_post
       parameters:
       - name: table_name
@@ -2193,6 +1962,14 @@ paths:
           content:
             application/json:
               schema: {}
+        '400':
+          description: '入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException:
+            ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException:
+            ...`）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -2207,39 +1984,22 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
   schemas:
-    ColumnDef:
+    ConfirmSubscriptionRequest:
       properties:
-        name:
-          description: カラム名
-          examples:
-          - user_id
-          title: Name
+        token:
+          description: 確認メールのリンクに含まれるトークン
+          title: Token
           type: string
-        type:
-          default: S
-          description: 型（主キー・インデックスに使うカラムは S / N / B）
-          enum:
-          - S
-          - N
-          - B
-          - BOOL
-          - L
-          - M
-          title: Type
-          type: string
-        required:
-          default: false
-          description: 必須か（主キーは自動で必須）
-          title: Required
-          type: boolean
-        description:
-          default: ''
-          description: 説明
-          title: Description
-          type: string
+        topic_arn:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: トピック ARN（指定すればトークンのトピックと一致するか確認する）
+          title: Topic Arn
       required:
-      - name
-      title: ColumnDef
+      - token
+      title: ConfirmSubscriptionRequest
       type: object
     CreateBucketRequest:
       properties:
@@ -2253,25 +2013,6 @@ components:
       - bucket_name
       title: CreateBucketRequest
       type: object
-    CreateDatabaseRequest:
-      properties:
-        name:
-          description: DB 名（英数字・_・-。実テーブル名の接頭辞になる）
-          examples:
-          - shop
-          title: Name
-          type: string
-        description:
-          default: ''
-          description: 説明
-          examples:
-          - EC サイトのデータ
-          title: Description
-          type: string
-      required:
-      - name
-      title: CreateDatabaseRequest
-      type: object
     CreateQueueRequest:
       properties:
         queue_name:
@@ -2283,99 +2024,6 @@ components:
       required:
       - queue_name
       title: CreateQueueRequest
-      type: object
-    CreateSchemaTableRequest:
-      examples:
-      - columns:
-        - name: order_id
-          type: S
-        - name: user_id
-          required: true
-          type: S
-        - name: created_at
-          type: S
-        - name: total
-          type: N
-        description: 注文
-        foreign_keys:
-        - columns:
-          - user_id
-          ref_table: users
-        indexes:
-        - name: user_id-index
-          partition_key: user_id
-          sort_key: created_at
-          type: GSI
-        name: orders
-        partition_key: order_id
-      properties:
-        name:
-          description: テーブル名（DB 内での名前。実テーブル名は `DB名.テーブル名`）
-          examples:
-          - orders
-          title: Name
-          type: string
-        description:
-          default: ''
-          description: 説明
-          title: Description
-          type: string
-        columns:
-          description: カラム定義
-          items:
-            $ref: '#/components/schemas/ColumnDef'
-          title: Columns
-          type: array
-        partition_key:
-          description: パーティションキーにするカラム名
-          examples:
-          - order_id
-          title: Partition Key
-          type: string
-        sort_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          description: ソートキーにするカラム名（任意）
-          title: Sort Key
-        indexes:
-          description: セカンダリインデックス
-          items:
-            $ref: '#/components/schemas/IndexDef'
-          title: Indexes
-          type: array
-        foreign_keys:
-          description: 他テーブル（または自分自身）の主キーへの参照
-          items:
-            $ref: '#/components/schemas/ForeignKeyDef'
-          title: Foreign Keys
-          type: array
-        billing_mode:
-          default: PAY_PER_REQUEST
-          description: 課金モード
-          enum:
-          - PAY_PER_REQUEST
-          - PROVISIONED
-          title: Billing Mode
-          type: string
-        read_capacity_units:
-          default: 5
-          description: PROVISIONED 時の RCU
-          minimum: 1
-          title: Read Capacity Units
-          type: integer
-        write_capacity_units:
-          default: 5
-          description: PROVISIONED 時の WCU
-          minimum: 1
-          title: Write Capacity Units
-          type: integer
-      required:
-      - name
-      - columns
-      - partition_key
-      title: CreateSchemaTableRequest
       type: object
     CreateTopicRequest:
       properties:
@@ -2394,14 +2042,14 @@ components:
         table_name:
           description: テーブル名
           examples:
-          - users
+          - Users
           title: Table Name
           type: string
         key_attributes:
           additionalProperties:
             additionalProperties: true
             type: object
-          description: 削除するアイテムのキー（DynamoDB 形式）
+          description: 削除するアイテムのキー（DynamoDB JSON）
           examples:
           - id:
               S: user-1
@@ -2418,7 +2066,7 @@ components:
           additionalProperties:
             additionalProperties: true
             type: object
-          description: 削除するアイテムのキー（DynamoDB 形式）
+          description: 削除するアイテムのキー（DynamoDB JSON）
           examples:
           - id:
               S: user-1
@@ -2440,33 +2088,150 @@ components:
       - detail
       title: ErrorResponse
       type: object
-    ForeignKeyDef:
+    FullCreateTableRequest:
       properties:
-        name:
+        table_name:
+          description: テーブル名（3〜255 文字、英数字・_・-・.）
+          examples:
+          - Users
+          title: Table Name
+          type: string
+        partition_key_name:
+          description: パーティションキー名
+          examples:
+          - id
+          title: Partition Key Name
+          type: string
+        partition_key_type:
+          default: S
+          description: 型（S / N / B）
+          enum:
+          - S
+          - N
+          - B
+          title: Partition Key Type
+          type: string
+        sort_key_name:
           anyOf:
           - type: string
           - type: 'null'
           default: null
-          description: 外部キー名（省略時は自動）
-          title: Name
-        columns:
-          description: このテーブルのカラム。参照先の主キーと同じ数（PK のみなら 1 つ、PK+SK なら 2 つ）
+          description: ソートキー名（任意）
+          title: Sort Key Name
+        sort_key_type:
+          anyOf:
+          - enum:
+            - S
+            - N
+            - B
+            type: string
+          - type: 'null'
+          default: S
+          description: 型（S / N / B）
+          title: Sort Key Type
+        billing_mode:
+          default: PAY_PER_REQUEST
+          description: 課金モード
+          enum:
+          - PAY_PER_REQUEST
+          - PROVISIONED
+          title: Billing Mode
+          type: string
+        read_capacity_units:
+          default: 5
+          description: PROVISIONED 時の RCU
+          minimum: 1
+          title: Read Capacity Units
+          type: integer
+        write_capacity_units:
+          default: 5
+          description: PROVISIONED 時の WCU
+          minimum: 1
+          title: Write Capacity Units
+          type: integer
+        gsis:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/GsiDefinition'
+            type: array
+          - type: 'null'
+          default: null
+          description: グローバルセカンダリインデックス
+          title: Gsis
+        lsis:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/LsiDefinition'
+            type: array
+          - type: 'null'
+          default: null
+          description: ローカルセカンダリインデックス（テーブルにソートキーが必要・作成時のみ指定可）
+          title: Lsis
+      required:
+      - table_name
+      - partition_key_name
+      title: FullCreateTableRequest
+      type: object
+    GsiDefinition:
+      properties:
+        name:
+          description: インデックス名
           examples:
-          - - user_id
+          - email-index
+          title: Name
+          type: string
+        partition_key:
+          description: パーティションキー名
+          examples:
+          - email
+          title: Partition Key
+          type: string
+        partition_key_type:
+          default: S
+          description: 型（S / N / B）
+          enum:
+          - S
+          - N
+          - B
+          title: Partition Key Type
+          type: string
+        sort_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: ソートキー名（任意）
+          title: Sort Key
+        sort_key_type:
+          anyOf:
+          - enum:
+            - S
+            - N
+            - B
+            type: string
+          - type: 'null'
+          default: S
+          description: 型（S / N / B）
+          title: Sort Key Type
+        projection_type:
+          default: ALL
+          description: 射影（INCLUDE のときは non_key_attributes も指定）
+          enum:
+          - ALL
+          - KEYS_ONLY
+          - INCLUDE
+          title: Projection Type
+          type: string
+        non_key_attributes:
+          description: INCLUDE で射影する非キー属性
           items:
             type: string
-          title: Columns
+          title: Non Key Attributes
           type: array
-        ref_table:
-          description: 参照先テーブル名（同じ DB 内。DB 名は付けない）
-          examples:
-          - users
-          title: Ref Table
-          type: string
       required:
-      - columns
-      - ref_table
-      title: ForeignKeyDef
+      - name
+      - partition_key
+      title: GsiDefinition
       type: object
     HTTPValidationError:
       title: HTTPValidationError
@@ -2477,52 +2242,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ValidationError'
-    IndexDef:
-      properties:
-        name:
-          description: インデックス名（3 文字以上）
-          examples:
-          - user_id-index
-          title: Name
-          type: string
-        type:
-          default: GSI
-          description: GSI（任意のキー）/ LSI（テーブルと同じ PK ＋ 別の SK。テーブルに SK が必要）
-          enum:
-          - GSI
-          - LSI
-          title: Type
-          type: string
-        partition_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          description: GSI のパーティションキー（LSI では無視）
-          examples:
-          - user_id
-          title: Partition Key
-        sort_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          description: ソートキー（GSI は任意、LSI は必須）
-          examples:
-          - created_at
-          title: Sort Key
-        projection_type:
-          default: ALL
-          description: 射影
-          enum:
-          - ALL
-          - KEYS_ONLY
-          title: Projection Type
-          type: string
-      required:
-      - name
-      title: IndexDef
-      type: object
     ItemAttribute:
       properties:
         name:
@@ -2533,18 +2252,72 @@ components:
           type: string
         type:
           default: S
-          description: 型（S / N / BOOL / M / L など）
+          description: 型（S / N / B / BOOL / NULL / M / L / SS / NS / BS）
+          enum:
+          - S
+          - N
+          - B
+          - BOOL
+          - 'NULL'
+          - M
+          - L
+          - SS
+          - NS
+          - BS
           title: Type
           type: string
         value:
-          description: 値
+          default: ''
+          description: 値。B は base64、M / L は JSON、SS / NS / BS は JSON 配列かカンマ区切り
           examples:
           - user-1
           title: Value
       required:
       - name
-      - value
       title: ItemAttribute
+      type: object
+    LsiDefinition:
+      properties:
+        name:
+          description: インデックス名
+          examples:
+          - created-index
+          title: Name
+          type: string
+        sort_key:
+          description: ソートキー名（パーティションキーはテーブルと同じ）
+          examples:
+          - created_at
+          title: Sort Key
+          type: string
+        sort_key_type:
+          default: S
+          description: 型（S / N / B）
+          enum:
+          - S
+          - N
+          - B
+          title: Sort Key Type
+          type: string
+        projection_type:
+          default: ALL
+          description: 射影
+          enum:
+          - ALL
+          - KEYS_ONLY
+          - INCLUDE
+          title: Projection Type
+          type: string
+        non_key_attributes:
+          description: INCLUDE で射影する非キー属性
+          items:
+            type: string
+          title: Non Key Attributes
+          type: array
+      required:
+      - name
+      - sort_key
+      title: LsiDefinition
       type: object
     PipelineBroadcastRequest:
       properties:
@@ -2646,33 +2419,86 @@ components:
       type: object
     PutItemFlatRequest:
       properties:
+        item:
+          anyOf:
+          - additionalProperties:
+              additionalProperties: true
+              type: object
+            type: object
+          - type: 'null'
+          default: null
+          description: アイテム（DynamoDB JSON）。attributes と どちらか一方を指定
+          examples:
+          - active:
+              BOOL: true
+            age:
+              N: '30'
+            id:
+              S: user-1
+            profile:
+              M:
+                city:
+                  S: Tokyo
+            tags:
+              SS:
+              - a
+              - b
+          title: Item
+        attributes:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ItemAttribute'
+            type: array
+          - type: 'null'
+          default: null
+          description: アイテム（画面の行形式）。item と どちらか一方を指定
+          title: Attributes
         table_name:
           description: テーブル名
           examples:
-          - users
+          - Users
           title: Table Name
           type: string
-        attributes:
-          description: アイテムの属性一覧
-          items:
-            $ref: '#/components/schemas/ItemAttribute'
-          title: Attributes
-          type: array
       required:
       - table_name
-      - attributes
       title: PutItemFlatRequest
       type: object
     PutItemRequest:
       properties:
+        item:
+          anyOf:
+          - additionalProperties:
+              additionalProperties: true
+              type: object
+            type: object
+          - type: 'null'
+          default: null
+          description: アイテム（DynamoDB JSON）。attributes と どちらか一方を指定
+          examples:
+          - active:
+              BOOL: true
+            age:
+              N: '30'
+            id:
+              S: user-1
+            profile:
+              M:
+                city:
+                  S: Tokyo
+            tags:
+              SS:
+              - a
+              - b
+          title: Item
         attributes:
-          description: アイテムの属性一覧
-          items:
-            $ref: '#/components/schemas/ItemAttribute'
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ItemAttribute'
+            type: array
+          - type: 'null'
+          default: null
+          description: アイテム（画面の行形式）。item と どちらか一方を指定
           title: Attributes
-          type: array
-      required:
-      - attributes
       title: PutItemRequest
       type: object
     PutObjectFlatRequest:
@@ -2724,7 +2550,7 @@ components:
       properties:
         key_conditions:
           additionalProperties: true
-          description: キー条件（属性名 → 値）
+          description: 'キー条件（属性名 → 値）。値の型はキー定義から決まる。DynamoDB JSON（{"N": "1"}）でも可'
           examples:
           - id: user-1
           title: Key Conditions
@@ -2739,6 +2565,21 @@ components:
       required:
       - key_conditions
       title: QueryItemsRequest
+      type: object
+    ResendConfirmationRequest:
+      properties:
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: 確認メールの送信方法。local = 擬似送信 / smtp = SMTP（未設定なら 400）/ 省略 = SMTP
+            が有効なら SMTP
+          title: Delivery Mode
+      title: ResendConfirmationRequest
       type: object
     SendEmailTaskRequest:
       properties:
@@ -2972,6 +2813,17 @@ components:
           - user@example.com
           title: Email
           type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: email 購読の確認メールの送信方法。local = 擬似送信 / smtp = SMTP / 省略 = SMTP
+            が有効なら SMTP
+          title: Delivery Mode
       required:
       - topic_arn
       - email
@@ -2996,6 +2848,17 @@ components:
           - user@example.com
           title: Endpoint
           type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: email 購読の確認メールの送信方法。local = 擬似送信 / smtp = SMTP / 省略 = SMTP
+            が有効なら SMTP
+          title: Delivery Mode
       required:
       - topic_arn
       - endpoint
@@ -3054,38 +2917,35 @@ components:
           - user@example.com
           title: Endpoint
           type: string
+        delivery_mode:
+          anyOf:
+          - enum:
+            - local
+            - smtp
+            type: string
+          - type: 'null'
+          default: null
+          description: email 購読の確認メールの送信方法。local = 擬似送信 / smtp = SMTP / 省略 = SMTP
+            が有効なら SMTP
+          title: Delivery Mode
       required:
       - endpoint
       title: SubscribeTopicRequest
       type: object
-    UpdateSchemaTableRequest:
+    UnsubscribeWithTokenRequest:
       properties:
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          description: 説明（省略時は変更しない）
-          title: Description
-        columns:
-          anyOf:
-          - items:
-              $ref: '#/components/schemas/ColumnDef'
-            type: array
-          - type: 'null'
-          default: null
-          description: カラム定義（省略時は変更しない）。主キー・インデックスのカラムは削除・型変更不可
-          title: Columns
-        foreign_keys:
-          anyOf:
-          - items:
-              $ref: '#/components/schemas/ForeignKeyDef'
-            type: array
-          - type: 'null'
-          default: null
-          description: 外部キー（省略時は変更しない。空配列で全削除）
-          title: Foreign Keys
-      title: UpdateSchemaTableRequest
+        subscription_arn:
+          description: サブスクリプション ARN
+          title: Subscription Arn
+          type: string
+        token:
+          description: 通知メールの配信停止リンクに含まれるトークン
+          title: Token
+          type: string
+      required:
+      - subscription_arn
+      - token
+      title: UnsubscribeWithTokenRequest
       type: object
     ValidationError:
       title: ValidationError

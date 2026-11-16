@@ -35,10 +35,12 @@ const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', borderB
 const td: React.CSSProperties = { padding: '6px 8px', borderBottom: '1px solid var(--border-color)', verticalAlign: 'top' };
 const code: React.CSSProperties = { backgroundColor: 'var(--code-bg)', padding: '1px 6px', borderRadius: '4px', color: '#38bdf8', fontSize: '12px' };
 
-export default async function SmtpSettingsCard({ returnTo }: { returnTo: '/mailbox' | '/pipeline' }) {
+export default async function SmtpSettingsCard({ returnTo }: { returnTo: string }) {
   const cfg = await getSmtpConfig();
   const active = !!(cfg?.is_enabled && cfg?.smtp_host);
   const isPipeline = returnTo === '/pipeline';
+  const isSns = returnTo.startsWith('/sns');
+  const idp = returnTo.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
 
   return (
     <article className="card" id="smtp">
@@ -54,7 +56,9 @@ export default async function SmtpSettingsCard({ returnTo }: { returnTo: '/mailb
       </div>
 
       <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
-        {isPipeline
+        {isSns
+          ? '購読の確認メールとメッセージ配信時の通知メールを、この SMTP サーバーから実際に送信します。'
+          : isPipeline
           ? 'ブロードキャスト配信時、SNS トピックのメールサブスクライバー宛てのメールをこの SMTP サーバーから実際に送信します。'
           : 'テストメール送信・SQS のメールタスク・SNS 配信で送るメールを、この SMTP サーバーから実際に送信します。'}
         {' '}設定は Mailbox / Pipeline で共通です。
@@ -81,27 +85,27 @@ export default async function SmtpSettingsCard({ returnTo }: { returnTo: '/mailb
           <input type="hidden" name="return_to" value={returnTo} />
           <div className="grid-2" style={{ gap: '12px', marginBottom: '12px' }}>
             <div style={field}>
-              <label style={label} htmlFor={`smtp_host${returnTo}`}>SMTP ホスト</label>
-              <input id={`smtp_host${returnTo}`} name="smtp_host" placeholder="smtp.gmail.com" defaultValue={cfg?.smtp_host || ''} />
+              <label style={label} htmlFor={`smtp_host${idp}`}>SMTP ホスト</label>
+              <input id={`smtp_host${idp}`} name="smtp_host" placeholder="smtp.gmail.com" defaultValue={cfg?.smtp_host || ''} />
             </div>
             <div style={field}>
-              <label style={label} htmlFor={`smtp_port${returnTo}`}>ポート（587=STARTTLS / 465=SSL / 1025・25=平文）</label>
-              <input id={`smtp_port${returnTo}`} name="smtp_port" type="number" min={1} max={65535} defaultValue={cfg?.smtp_port || 587} />
+              <label style={label} htmlFor={`smtp_port${idp}`}>ポート（587=STARTTLS / 465=SSL / 1025・25=平文）</label>
+              <input id={`smtp_port${idp}`} name="smtp_port" type="number" min={1} max={65535} defaultValue={cfg?.smtp_port || 587} />
             </div>
             <div style={field}>
-              <label style={label} htmlFor={`smtp_user${returnTo}`}>ユーザー名（認証不要なら空欄）</label>
-              <input id={`smtp_user${returnTo}`} name="smtp_user" autoComplete="off" placeholder="you@example.com" defaultValue={cfg?.smtp_user || ''} />
+              <label style={label} htmlFor={`smtp_user${idp}`}>ユーザー名（認証不要なら空欄）</label>
+              <input id={`smtp_user${idp}`} name="smtp_user" autoComplete="off" placeholder="you@example.com" defaultValue={cfg?.smtp_user || ''} />
             </div>
             <div style={field}>
-              <label style={label} htmlFor={`smtp_password${returnTo}`}>
+              <label style={label} htmlFor={`smtp_password${idp}`}>
                 パスワード {cfg?.has_password ? '（保存済み・変更時のみ入力）' : ''}
               </label>
-              <input id={`smtp_password${returnTo}`} name="smtp_password" type="password" autoComplete="new-password"
+              <input id={`smtp_password${idp}`} name="smtp_password" type="password" autoComplete="new-password"
                 placeholder={cfg?.has_password ? '●●●●●●●●（空欄なら変更しない）' : 'アプリ パスワード等'} />
             </div>
             <div style={field}>
-              <label style={label} htmlFor={`smtp_from${returnTo}`}>送信元アドレス（From）</label>
-              <input id={`smtp_from${returnTo}`} name="smtp_from" placeholder="aws-emulator@local.test" defaultValue={cfg?.smtp_from || 'aws-emulator@local.test'} />
+              <label style={label} htmlFor={`smtp_from${idp}`}>送信元アドレス（From）</label>
+              <input id={`smtp_from${idp}`} name="smtp_from" placeholder="aws-emulator@local.test" defaultValue={cfg?.smtp_from || 'aws-emulator@local.test'} />
             </div>
             <div style={{ ...field, justifyContent: 'flex-end', gap: '8px' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', cursor: 'pointer' }}>
@@ -130,7 +134,9 @@ export default async function SmtpSettingsCard({ returnTo }: { returnTo: '/mailb
             <li><b>送信元アドレス</b>には、そのサービスで送信が許可されたアドレスを入れます（Gmail なら自分の Gmail アドレス）。</li>
             <li>「実メール送信を有効にする」にチェックを入れて <b>保存</b>。</li>
             <li><b>接続テスト</b>で接続と認証が通るか確認します（メールは送られません）。</li>
-            {isPipeline ? (
+            {isSns ? (
+              <li>上の購読登録やメッセージ配信で「<b>SMTP で送信</b>」を選びます。確認メールが届き、リンクで承認すると以降の通知が届きます。</li>
+            ) : isPipeline ? (
               <li>パイプライン一覧で「➕ メールアドレスを追加」→ 上の <b>ブロードキャスト配信</b> を実行。配信結果は Mailbox の一覧でも確認できます。</li>
             ) : (
               <li>上の <b>テストメール送信</b> で自分宛てに送り、一覧の配信ステータスが <code style={code}>delivered_smtp</code> になれば成功です。</li>

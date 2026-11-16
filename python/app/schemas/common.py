@@ -15,8 +15,7 @@ ERROR_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     500: {"model": ErrorResponse, "description": "AWS Emulator / 内部処理でエラーが発生"},
 }
 
-# 入力・整合性チェックがあるエンドポイント用（DB / テーブル設計など）
+# 入力チェックがあるエンドポイント用
 VALIDATION_RESPONSES: Dict[int | str, Dict[str, Any]] = {
-    400: {"model": ErrorResponse, "description": "入力値・整合性のエラー（型不一致、外部キー違反、参照中のため削除不可など）"},
-    404: {"model": ErrorResponse, "description": "DB / テーブルが見つからない"},
+    400: {"model": ErrorResponse, "description": "入力エラー。DynamoDB では AWS のエラーコードをそのまま返す（例: `ValidationException: ...` / `ResourceNotFoundException: ...` / `ConditionalCheckFailedException: ...`）"},
 }

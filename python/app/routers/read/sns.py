@@ -1,30 +1,27 @@
-"""SNS - Read: トピック一覧 / サブスクリプション一覧"""
-from fastapi import APIRouter, HTTPException, Path
+"""SNS - Read: トピック一覧 / サブスクリプション一覧（承認状態つき）"""
+from fastapi import APIRouter, Path
 
-from app.aws_client import get_client
+from app.routers._errors import to_http
+from app.services import sns_service
 
 router = APIRouter()
 
 
-@router.get("/api/sns/topics", summary="[SNS] トピック一覧")
+@router.get("/api/sns/topics", summary="[SNS] トピック一覧", description="NextToken をたどって全件返します。各トピックにタイプ（standard / fifo）と表示名を付けます。")
 def list_topics():
     try:
-        sns = get_client("sns")
-        res = sns.list_topics()
-        return {"topics": [{"arn": t["TopicArn"], "name": t["TopicArn"].split(":")[-1]} for t in res.get("Topics", [])]}
+        return {"topics": sns_service.list_topics(with_attributes=True)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise to_http(e)
 
 
-@router.get("/api/sns/topics/{topic_arn:path}/subscriptions", summary="[SNS] トピックのサブスクリプション一覧")
+@router.get(
+    "/api/sns/topics/{topic_arn:path}/subscriptions",
+    summary="[SNS] トピックのサブスクリプション一覧",
+    description="`status` は email / email-json なら `pending_confirmation`（承認待ち）か `confirmed`（承認済み）、その他のプロトコルは常に `confirmed`。",
+)
 def list_subscriptions(topic_arn: str = Path(..., description="トピック ARN")):
     try:
-        sns = get_client("sns")
-        res = sns.list_subscriptions_by_topic(TopicArn=topic_arn)
-        subs = [
-            {"arn": s.get("SubscriptionArn"), "protocol": s.get("Protocol"), "endpoint": s.get("Endpoint")}
-            for s in res.get("Subscriptions", [])
-        ]
-        return {"topic_arn": topic_arn, "subscriptions": subs}
+        return {"topic_arn": topic_arn, "subscriptions": sns_service.list_subscriptions_by_topic(topic_arn)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise to_http(e)

@@ -1,6 +1,7 @@
 """Pipeline - Delete: サブスクリプション解除"""
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Path
 
+from app.routers._errors import to_http
 from app.services.pipeline import unsubscribe_arn
 
 router = APIRouter()
@@ -11,4 +12,4 @@ def remove_subscription_api(subscription_arn: str = Path(..., description="サ�
     try:
         return unsubscribe_arn(subscription_arn)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise to_http(e)

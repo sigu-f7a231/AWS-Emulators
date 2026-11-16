@@ -1,220 +1,145 @@
-import os
+"""SNS → Email / SQS パイプライン"""
+import hashlib
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
 from app.aws_client import get_client
-from app.services.mail_service import send_email
+from app.services import sns_service
+
+
+def _sends_topic(statement: Dict[str, Any], topic_arn: str) -> bool:
+    """このステートメントが topic_arn からの sqs:SendMessage を許可しているか"""
+    if statement.get("Effect") != "Allow":
+        return False
+    actions = statement.get("Action", [])
+    actions = [actions] if isinstance(actions, str) else actions
+    if not any(a.lower() in ("sqs:sendmessage", "sqs:*", "*") for a in actions):
+        return False
+    cond = statement.get("Condition", {})
+    for op in ("ArnEquals", "ArnLike", "StringEquals"):
+        src = cond.get(op, {}).get("aws:SourceArn")
+        if src == topic_arn or (isinstance(src, list) and topic_arn in src):
+            return True
+    return False
+
+
+def allow_topic_in_queue_policy(queue_url: str, queue_arn: str, topic_arn: str) -> bool:
+    """
+    キューポリシーに「このトピックからの sqs:SendMessage を許可」を追記する。
+    既存のステートメントは消さない（上書きしない）。すでに許可済みなら何もしない。
+    戻り値: 追記したら True
+    """
+    sqs = get_client("sqs")
+    attrs = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["Policy"]).get("Attributes", {})
+    raw = attrs.get("Policy")
+    policy: Dict[str, Any] = json.loads(raw) if raw else {"Version": "2012-10-17", "Statement": []}
+    statements = policy.get("Statement", [])
+    if isinstance(statements, dict):
+        statements = [statements]
+    if any(_sends_topic(st, topic_arn) for st in statements):
+        return False
+
+    sid_base = "AllowSNS-" + "".join(ch if ch.isalnum() else "-" for ch in topic_arn.split(":")[-1])
+    sid = f"{sid_base}-{hashlib.sha1(topic_arn.encode()).hexdigest()[:8]}"
+    statements.append({
+        "Sid": sid,
+        "Effect": "Allow",
+        "Principal": {"Service": "sns.amazonaws.com"},
+        "Action": "sqs:SendMessage",
+        "Resource": queue_arn,
+        "Condition": {"ArnEquals": {"aws:SourceArn": topic_arn}},
+    })
+    policy["Statement"] = statements
+    policy.setdefault("Version", "2012-10-17")
+    sqs.set_queue_attributes(QueueUrl=queue_url, Attributes={"Policy": json.dumps(policy)})
+    return True
+
 
 def link_sns_to_sqs(topic_arn: str, queue_name: str) -> Dict:
-    """
-    Subscribes an SQS queue to an SNS topic.
-    """
-    sns = get_client("sns")
+    """SQS キューをトピックに購読させ、キューポリシーに配信許可を追記する"""
     sqs = get_client("sqs")
+    queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
+    queue_arn = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
 
-    q_url_res = sqs.get_queue_url(QueueName=queue_name)
-    queue_url = q_url_res["QueueUrl"]
-
-    attr_res = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["QueueArn"])
-    queue_arn = attr_res["Attributes"]["QueueArn"]
-
-    sub_res = sns.subscribe(
-        TopicArn=topic_arn,
-        Protocol="sqs",
-        Endpoint=queue_arn,
-        ReturnSubscriptionArn=True,
-    )
-    subscription_arn = sub_res.get("SubscriptionArn")
-
-    # Set SQS policy allowing SNS SendMessage
-    policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": f"AllowSNS-{queue_name}",
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": "sqs:SendMessage",
-                "Resource": queue_arn,
-                "Condition": {"ArnEquals": {"aws:SourceArn": topic_arn}},
-            }
-        ],
-    }
-    try:
-        sqs.set_queue_attributes(
-            QueueUrl=queue_url,
-            Attributes={"Policy": json.dumps(policy)},
-        )
-    except Exception:
-        pass
-
+    sub = sns_service.subscribe(topic_arn, "sqs", queue_arn)
+    policy_added = allow_topic_in_queue_policy(queue_url, queue_arn, topic_arn)
     return {
         "topic_arn": topic_arn,
         "queue_name": queue_name,
         "queue_arn": queue_arn,
-        "subscription_arn": subscription_arn,
+        "subscription_arn": sub["subscription_arn"],
+        "policy_statement_added": policy_added,
     }
 
-def subscribe_email_to_topic(topic_arn: str, email: str) -> Dict:
-    """
-    Subscribes an email address to an SNS topic.
-    """
-    sns = get_client("sns")
-    res = sns.subscribe(
-        TopicArn=topic_arn,
-        Protocol="email",
-        Endpoint=email,
-        ReturnSubscriptionArn=True,
-    )
+
+def subscribe_email_to_topic(topic_arn: str, email: str, delivery_mode: Optional[str] = None) -> Dict:
+    """メールアドレスを購読させる。承認待ちになり、確認メールが送られる"""
+    res = sns_service.subscribe(topic_arn, "email", email, delivery_mode)
     return {
         "topic_arn": topic_arn,
         "email": email,
-        "subscription_arn": res.get("SubscriptionArn"),
+        "subscription_arn": res["subscription_arn"],
+        "status": res["status"],
+        "confirmation_email_status": (res.get("confirmation_email") or {}).get("status"),
     }
 
+
 def unsubscribe_arn(subscription_arn: str) -> Dict:
-    """
-    Unsubscribes a subscription by its ARN.
-    """
-    sns = get_client("sns")
-    sns.unsubscribe(SubscriptionArn=subscription_arn)
-    return {"message": "サブスクリプションを解除・削除しました", "subscription_arn": subscription_arn}
+    return sns_service.unsubscribe(subscription_arn)
+
+
+def _list_queues() -> List[Dict[str, str]]:
+    sqs = get_client("sqs")
+    queues: List[Dict[str, str]] = []
+    kwargs: Dict[str, Any] = {"MaxResults": 1000}
+    while True:
+        res = sqs.list_queues(**kwargs)
+        queues.extend({"name": u.split("/")[-1], "url": u} for u in res.get("QueueUrls", []))
+        if not res.get("NextToken"):
+            return queues
+        kwargs["NextToken"] = res["NextToken"]
+
 
 def get_pipeline_overview() -> Dict:
-    """
-    Retrieves all SNS topics, SQS queues, and structured subscriptions
-    (Email subscribers & SQS subscribers per topic).
-    """
-    sns = get_client("sns")
-    sqs = get_client("sqs")
-
-    # 1. Topics
-    topics_raw = sns.list_topics().get("Topics", [])
-    topics = []
-    for t in topics_raw:
-        arn = t["TopicArn"]
-        name = arn.split(":")[-1]
-        topics.append({"arn": arn, "name": name})
-
-    # 2. Queues
-    queues_raw = sqs.list_queues().get("QueueUrls", [])
-    queues = []
-    for q_url in queues_raw:
-        q_name = q_url.split("/")[-1]
-        queues.append({"name": q_name, "url": q_url})
-
-    # 3. Topic details with Subscriptions
-    pipeline_topics = []
+    """トピック・キュー・トピックごとの購読（email は承認状態つき）"""
+    topics = sns_service.list_topics()
+    pipelines = []
     for t in topics:
-        topic_arn = t["arn"]
-        email_subs = []
-        sqs_subs = []
-
+        email_subs, sqs_subs = [], []
         try:
-            subs_res = sns.list_subscriptions_by_topic(TopicArn=topic_arn)
-            for s in subs_res.get("Subscriptions", []):
-                proto = s.get("Protocol")
-                sub_arn = s.get("SubscriptionArn")
-                endpoint = s.get("Endpoint", "")
-
-                if proto == "email":
-                    email_subs.append({
-                        "subscription_arn": sub_arn,
-                        "email": endpoint,
-                    })
-                elif proto == "sqs":
-                    q_name = endpoint.split(":")[-1]
-                    sqs_subs.append({
-                        "subscription_arn": sub_arn,
-                        "queue_name": q_name,
-                        "queue_arn": endpoint,
-                    })
+            for s in sns_service.list_subscriptions_by_topic(t["arn"]):
+                if s["protocol"] in sns_service.EMAIL_PROTOCOLS:
+                    email_subs.append({"subscription_arn": s["arn"], "email": s["endpoint"], "protocol": s["protocol"], "status": s["status"]})
+                elif s["protocol"] == "sqs":
+                    sqs_subs.append({"subscription_arn": s["arn"], "queue_name": s["endpoint"].split(":")[-1], "queue_arn": s["endpoint"], "status": s["status"]})
         except Exception:
             pass
-
-        pipeline_topics.append({
-            "topic_arn": topic_arn,
+        pipelines.append({
+            "topic_arn": t["arn"],
             "topic_name": t["name"],
             "email_subscriptions": email_subs,
             "sqs_subscriptions": sqs_subs,
         })
+    return {"topics": topics, "queues": _list_queues(), "pipelines": pipelines}
 
-    return {
-        "topics": topics,
-        "queues": queues,
-        "pipelines": pipeline_topics,
-    }
 
 def broadcast_topic_pipeline(topic_arn: str, subject: str, message_body: str, delivery_mode: Optional[str] = None) -> Dict:
     """
-    Publishes to the SNS topic and:
-    - Delivers email to all email subscriptions registered on this SNS topic.
-    - Sends message to all connected SQS queues.
+    SNS に発行する。
+    - SQS への配信は SNS が自動で行う（ここでは送らない）
+    - email は承認済みの購読にだけ、このアプリがメールを送る（承認待ちはスキップ）
     """
     sns = get_client("sns")
-    sqs = get_client("sqs")
-
-    # 1. Publish to SNS
-    pub_res = sns.publish(
-        TopicArn=topic_arn,
-        Subject=subject,
-        Message=message_body,
-    )
-    message_id = pub_res.get("MessageId")
-
-    # 2. Fetch subscriptions on this topic
-    subs_res = sns.list_subscriptions_by_topic(TopicArn=topic_arn)
-    email_deliveries = []
-    sqs_deliveries = []
-
-    for s in subs_res.get("Subscriptions", []):
-        proto = s.get("Protocol")
-        endpoint = s.get("Endpoint", "")
-
-        if proto == "email" and endpoint:
-            # Deliver email
-            email_rec = send_email(
-                to_address=endpoint,
-                subject=f"[{subject}] from SNS:{topic_arn.split(':')[-1]}",
-                body=message_body,
-                source="sns",
-                source_detail=f"Topic: {topic_arn.split(':')[-1]}",
-                delivery_mode=delivery_mode,
-            )
-            email_deliveries.append({
-                "email": endpoint,
-                "email_id": email_rec["id"],
-                "status": email_rec["status"],
-                "error": email_rec.get("error"),
-            })
-
-        elif proto == "sqs" and endpoint:
-            # Forward message to SQS
-            q_name = endpoint.split(":")[-1]
-            sqs_msg_id = None
-            try:
-                q_url = sqs.get_queue_url(QueueName=q_name)["QueueUrl"]
-                send_res = sqs.send_message(
-                    QueueUrl=q_url,
-                    MessageBody=json.dumps({
-                        "Type": "Notification",
-                        "TopicArn": topic_arn,
-                        "Subject": subject,
-                        "Message": message_body,
-                    }),
-                )
-                sqs_msg_id = send_res.get("MessageId")
-            except Exception:
-                pass
-            sqs_deliveries.append({
-                "queue_name": q_name,
-                "queue_arn": endpoint,
-                "sqs_message_id": sqs_msg_id,
-                "status": "delivered_to_sqs",
-            })
-
+    message_id = sns.publish(TopicArn=topic_arn, Subject=subject, Message=message_body).get("MessageId")
+    emails = sns_service.deliver_to_email_subscribers(topic_arn, subject, message_body, message_id, delivery_mode)
+    sqs_deliveries = [
+        {"queue_name": s["endpoint"].split(":")[-1], "queue_arn": s["endpoint"], "status": "delivered_by_sns"}
+        for s in sns_service.list_subscriptions_by_topic(topic_arn) if s["protocol"] == "sqs"
+    ]
     return {
         "topic_arn": topic_arn,
         "message_id": message_id,
-        "email_deliveries": email_deliveries,
+        "email_deliveries": emails["delivered"],
+        "email_skipped_pending": emails["skipped_pending"],
         "sqs_deliveries": sqs_deliveries,
     }

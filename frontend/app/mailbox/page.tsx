@@ -11,6 +11,18 @@ interface Email {
 
 const BACKEND = process.env.BACKEND_INTERNAL_URL || 'http://python:8000';
 
+// 本文中の URL をリンクにする（確認メールの承認リンク・通知メールの配信停止リンクを開けるように）
+function Linkified({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g);
+  return (
+    <>
+      {parts.map((p, i) => /^https?:\/\//.test(p)
+        ? <a key={i} href={p} target="_blank" rel="noreferrer" style={{ color: 'var(--aws-orange)', wordBreak: 'break-all' }}>{p}</a>
+        : <span key={i}>{p}</span>)}
+    </>
+  );
+}
+
 async function getEmails(): Promise<Email[]> {
   try {
     const res = await fetch(`${BACKEND}/api/mail/list`, { cache: 'no-store' });
@@ -95,7 +107,7 @@ export default async function MailboxPage({
                   backgroundColor: 'var(--code-bg)', borderRadius: '6px',
                   color: '#38bdf8', fontSize: '13px', whiteSpace: 'pre-wrap',
                 }}>
-                  {email.body}
+                  <Linkified text={email.body} />
                 </pre>
                 {email.error && (
                   <div className="alert-message alert-error" style={{ marginTop: '8px', marginBottom: 0, fontSize: '12px' }}>

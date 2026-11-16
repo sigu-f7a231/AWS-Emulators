@@ -7,13 +7,14 @@ import { useState } from 'react';
 export type DeliveryMode = 'local' | 'smtp';
 
 export default function DeliveryModeForm({
-  action, smtpReady, smtpLabel, submitLabel, children,
+  action, smtpReady, smtpLabel, submitLabel, children, label = '送信方法',
 }: {
   action: string;
   smtpReady: boolean;
   smtpLabel?: string;          // 例: smtp.gmail.com:587
   submitLabel: string;
   children: React.ReactNode;   // 宛先・件名・本文などの入力欄（サーバー側で描画）
+  label?: string;              // 例: 「確認メールの送信方法」
 }) {
   const [mode, setMode] = useState<DeliveryMode>(smtpReady ? 'smtp' : 'local');
   const blocked = mode === 'smtp' && !smtpReady;
@@ -48,7 +49,7 @@ export default function DeliveryModeForm({
         </div>
       )}
 
-      <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>送信方法</div>
+      <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>{label}</div>
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '14px' }}>
         {option('smtp', '🌐 SMTP で送信',
           smtpReady ? `実際にメールを送ります（${smtpLabel || 'SMTP'}）` : '未設定のため使えません')}

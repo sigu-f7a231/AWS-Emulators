@@ -1,12 +1,233 @@
+"""
+DynamoDB 操作（AWS の DynamoDB と同じ仕様で扱う）
+
+- テーブルはパーティションキー / ソートキー / GSI / LSI / 課金モードを指定して作成する
+- アイテムはスキーマレス。型は AWS と同じ 10 種類（S N B BOOL NULL M L SS NS BS）
+- 入出力は AWS の「DynamoDB JSON」形式（{"name": {"S": "value"}}）。B / BS は base64 文字列で表す
+- 入力の検証やエラーは DynamoDB（エミュレータ）に任せ、エラーコードとメッセージをそのまま返す
+"""
+import base64
+import binascii
 import json
-from typing import Dict, List, Any, Optional
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Tuple
+
 from app.aws_client import get_client
+
+ATTRIBUTE_TYPES = ("S", "N", "B", "BOOL", "NULL", "M", "L", "SS", "NS", "BS")
+KEY_TYPES = ("S", "N", "B")
+SCAN_MAX_ITEMS = 1000
+
+
+class ItemFormatError(ValueError):
+    """入力値を DynamoDB の AttributeValue に変換できない（HTTP 400）"""
+
+
+# --------------------------------------------------------------------------
+# AttributeValue 変換
+#   ddb JSON  : API の入出力。B / BS は base64 文字列
+#   boto 形式 : boto3 client に渡す形式。B / BS は bytes
+# --------------------------------------------------------------------------
+def _b64decode(v: Any, where: str) -> bytes:
+    if not isinstance(v, str):
+        raise ItemFormatError(f"{where}: B 型の値は base64 文字列で指定してください")
+    try:
+        return base64.b64decode(v, validate=True)
+    except (binascii.Error, ValueError):
+        raise ItemFormatError(f"{where}: base64 として正しくありません")
+
+
+def ddb_json_to_boto(av: Any, where: str = "値") -> Dict[str, Any]:
+    """DynamoDB JSON の AttributeValue を boto3 用に変換（形式もチェックする）"""
+    if not isinstance(av, dict) or len(av) != 1:
+        raise ItemFormatError(f"{where}: AttributeValue は {{\"型\": 値}} の形で 1 つだけ指定してください（例: {{\"S\": \"abc\"}}）")
+    t, v = next(iter(av.items()))
+    if t not in ATTRIBUTE_TYPES:
+        raise ItemFormatError(f"{where}: 型「{t}」は使えません（{' / '.join(ATTRIBUTE_TYPES)}）")
+    if t == "S":
+        if not isinstance(v, str):
+            raise ItemFormatError(f"{where}: S 型の値は文字列で指定してください")
+        return {"S": v}
+    if t == "N":
+        if not isinstance(v, str):
+            raise ItemFormatError(f"{where}: N 型の値は文字列で指定してください（例: {{\"N\": \"123\"}}）")
+        return {"N": v}
+    if t == "B":
+        return {"B": _b64decode(v, where)}
+    if t == "BOOL":
+        if not isinstance(v, bool):
+            raise ItemFormatError(f"{where}: BOOL 型の値は true / false で指定してください")
+        return {"BOOL": v}
+    if t == "NULL":
+        if v is not True:
+            raise ItemFormatError(f"{where}: NULL 型の値は true で指定してください（例: {{\"NULL\": true}}）")
+        return {"NULL": True}
+    if t == "M":
+        if not isinstance(v, dict):
+            raise ItemFormatError(f"{where}: M 型の値はオブジェクトで指定してください")
+        return {"M": {k: ddb_json_to_boto(x, f"{where}.{k}") for k, x in v.items()}}
+    if t == "L":
+        if not isinstance(v, list):
+            raise ItemFormatError(f"{where}: L 型の値は配列で指定してください")
+        return {"L": [ddb_json_to_boto(x, f"{where}[{i}]") for i, x in enumerate(v)]}
+    # セット型
+    if not isinstance(v, list):
+        raise ItemFormatError(f"{where}: {t} 型の値は配列で指定してください")
+    if t == "SS":
+        if not all(isinstance(x, str) for x in v):
+            raise ItemFormatError(f"{where}: SS 型の要素は文字列で指定してください")
+        return {"SS": list(v)}
+    if t == "NS":
+        if not all(isinstance(x, str) for x in v):
+            raise ItemFormatError(f"{where}: NS 型の要素は数値の文字列で指定してください（例: [\"1\", \"2\"]）")
+        return {"NS": list(v)}
+    return {"BS": [_b64decode(x, f"{where}[{i}]") for i, x in enumerate(v)]}
+
+
+def boto_to_ddb_json(av: Dict[str, Any]) -> Dict[str, Any]:
+    """boto3 から返った AttributeValue を DynamoDB JSON に（bytes → base64）"""
+    t, v = next(iter(av.items()))
+    if t == "B":
+        return {"B": base64.b64encode(bytes(v)).decode()}
+    if t == "BS":
+        return {"BS": [base64.b64encode(bytes(x)).decode() for x in v]}
+    if t == "M":
+        return {"M": {k: boto_to_ddb_json(x) for k, x in v.items()}}
+    if t == "L":
+        return {"L": [boto_to_ddb_json(x) for x in v]}
+    if t in ("SS", "NS"):
+        return {t: list(v)}
+    return {t: v}
+
+
+def ddb_json_to_plain(av: Dict[str, Any]) -> Any:
+    """表示用のふつうの JSON 値に（N は精度を保つため文字列のまま、B は base64）"""
+    t, v = next(iter(av.items()))
+    if t == "M":
+        return {k: ddb_json_to_plain(x) for k, x in v.items()}
+    if t == "L":
+        return [ddb_json_to_plain(x) for x in v]
+    if t == "NULL":
+        return None
+    return v
+
+
+def plain_to_ddb_json(v: Any, where: str = "値") -> Dict[str, Any]:
+    """ふつうの JSON 値を DynamoDB JSON に（M / L の入力欄用。文字列→S、数値→N、真偽→BOOL、null→NULL）"""
+    if v is None:
+        return {"NULL": True}
+    if isinstance(v, bool):
+        return {"BOOL": v}
+    if isinstance(v, (int, float)):
+        return {"N": json.dumps(v)}
+    if isinstance(v, str):
+        return {"S": v}
+    if isinstance(v, list):
+        return {"L": [plain_to_ddb_json(x, f"{where}[{i}]") for i, x in enumerate(v)]}
+    if isinstance(v, dict):
+        return {"M": {k: plain_to_ddb_json(x, f"{where}.{k}") for k, x in v.items()}}
+    raise ItemFormatError(f"{where}: この値は変換できません")
+
+
+def _parse_list(text: str, where: str) -> List[Any]:
+    text = text.strip()
+    if text.startswith("["):
+        try:
+            arr = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ItemFormatError(f"{where}: JSON 配列として読めません（{e.msg}）")
+        if not isinstance(arr, list):
+            raise ItemFormatError(f"{where}: 配列で指定してください")
+        return arr
+    return [x.strip() for x in text.split(",") if x.strip()]
+
+
+def form_value_to_ddb_json(attr_type: str, raw: Any, where: str) -> Dict[str, Any]:
+    """
+    画面の入力欄（型 ＋ テキスト）を DynamoDB JSON に変換する。
+    S: そのまま / N: 数値の文字列 / B: base64 / BOOL: true・false / NULL: 値なし
+    M: JSON オブジェクト / L: JSON 配列（中身は自動で型付け。DynamoDB JSON をそのまま書いてもよい）
+    SS・NS・BS: JSON 配列 または カンマ区切り
+    """
+    t = (attr_type or "S").upper()
+    text = "" if raw is None else str(raw)
+    if t not in ATTRIBUTE_TYPES:
+        raise ItemFormatError(f"{where}: 型「{t}」は使えません（{' / '.join(ATTRIBUTE_TYPES)}）")
+    if t == "S":
+        return {"S": text}
+    if t == "N":
+        return {"N": text.strip()}
+    if t == "B":
+        return {"B": text.strip()}
+    if t == "BOOL":
+        low = text.strip().lower()
+        if low not in ("true", "false"):
+            raise ItemFormatError(f"{where}: BOOL 型は true か false を入力してください")
+        return {"BOOL": low == "true"}
+    if t == "NULL":
+        return {"NULL": True}
+    if t in ("M", "L"):
+        try:
+            v = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ItemFormatError(f"{where}: {t} 型は JSON で入力してください（{e.msg}）")
+        if t == "M":
+            if not isinstance(v, dict):
+                raise ItemFormatError(f"{where}: M 型は JSON オブジェクト（{{...}}）で入力してください")
+            # DynamoDB JSON（{"M": {...}} の中身）として書かれていればそのまま使う
+            if v and all(isinstance(x, dict) and len(x) == 1 and next(iter(x)) in ATTRIBUTE_TYPES for x in v.values()):
+                return {"M": v}
+            return plain_to_ddb_json(v, where)
+        if not isinstance(v, list):
+            raise ItemFormatError(f"{where}: L 型は JSON 配列（[...]）で入力してください")
+        if v and all(isinstance(x, dict) and len(x) == 1 and next(iter(x)) in ATTRIBUTE_TYPES for x in v):
+            return {"L": v}
+        return plain_to_ddb_json(v, where)
+    items = _parse_list(text, where)
+    if t == "NS":
+        return {"NS": [str(x) if not isinstance(x, str) else x for x in items]}
+    if not all(isinstance(x, str) for x in items):
+        raise ItemFormatError(f"{where}: {t} 型の要素は文字列で指定してください")
+    return {t: items}
+
+
+def item_to_boto(item: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(item, dict) or not item:
+        raise ItemFormatError("アイテムは 1 つ以上の属性を持つオブジェクトで指定してください")
+    return {name: ddb_json_to_boto(av, name) for name, av in item.items()}
+
+
+def _format_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    raw = {k: boto_to_ddb_json(v) for k, v in item.items()}
+    return {
+        "_raw": raw,
+        "attributes": {
+            k: {"type": next(iter(v)), "value": ddb_json_to_plain(v), "raw_dynamo": v}
+            for k, v in raw.items()
+        },
+    }
+
+
+# --------------------------------------------------------------------------
+# テーブル
+# --------------------------------------------------------------------------
+def list_table_names() -> List[str]:
+    dynamo = get_client("dynamodb")
+    names: List[str] = []
+    kwargs: Dict[str, Any] = {}
+    while True:
+        res = dynamo.list_tables(**kwargs)
+        names.extend(res.get("TableNames", []))
+        last = res.get("LastEvaluatedTableName")
+        if not last:
+            return names
+        kwargs["ExclusiveStartTableName"] = last
+
 
 def list_tables_with_details() -> List[Dict]:
     """Lists all tables with their complete key schema, GSI, LSI, attributes, and settings."""
     dynamo = get_client("dynamodb")
-    tables_res = dynamo.list_tables()
-    table_names = tables_res.get("TableNames", [])
+    table_names = list_table_names()
 
     detailed_tables = []
     for t_name in table_names:
@@ -39,6 +260,7 @@ def list_tables_with_details() -> List[Dict]:
                     "name": gsi.get("IndexName"),
                     "keys": gsi_keys,
                     "projection": gsi.get("Projection", {}).get("ProjectionType", "ALL"),
+                    "non_key_attributes": gsi.get("Projection", {}).get("NonKeyAttributes", []),
                     "status": gsi.get("IndexStatus", "ACTIVE"),
                     "item_count": gsi.get("ItemCount", 0),
                 })
@@ -58,6 +280,7 @@ def list_tables_with_details() -> List[Dict]:
                     "name": lsi.get("IndexName"),
                     "keys": lsi_keys,
                     "projection": lsi.get("Projection", {}).get("ProjectionType", "ALL"),
+                    "non_key_attributes": lsi.get("Projection", {}).get("NonKeyAttributes", []),
                     "item_count": lsi.get("ItemCount", 0),
                 })
 
@@ -90,6 +313,14 @@ def list_tables_with_details() -> List[Dict]:
             })
     return detailed_tables
 
+def _projection(p: Dict[str, Any]) -> Dict[str, Any]:
+    proj_type = (p.get("projection_type") or "ALL").upper()
+    proj: Dict[str, Any] = {"ProjectionType": proj_type}
+    if proj_type == "INCLUDE":
+        proj["NonKeyAttributes"] = [a.strip() for a in (p.get("non_key_attributes") or []) if a and a.strip()]
+    return proj
+
+
 def create_table_full(
     table_name: str,
     partition_key_name: str,
@@ -103,127 +334,114 @@ def create_table_full(
     lsis: Optional[List[Dict]] = None,
 ) -> Dict:
     """
-    Creates a DynamoDB table with complete support for:
-    - Partition Key & Sort Key with types (S, N, B)
-    - Billing Mode (PAY_PER_REQUEST or PROVISIONED)
-    - Global Secondary Indexes (GSI)
-    - Local Secondary Indexes (LSI)
-    - Projection configurations
+    CreateTable をそのまま呼ぶ。名前の長さ・キーの型・インデックス数などの検証は DynamoDB に任せる
+    （違反すれば AWS と同じ ValidationException が返る）。
     """
     dynamo = get_client("dynamodb")
+    attr_defs: Dict[str, str] = {}
+
+    def define(name: str, typ: Optional[str]) -> None:
+        attr_defs[name] = (typ or "S").upper()
 
     key_schema = [{"AttributeName": partition_key_name, "KeyType": "HASH"}]
-    attr_definitions_map = {partition_key_name: partition_key_type}
-
+    define(partition_key_name, partition_key_type)
     if sort_key_name:
         key_schema.append({"AttributeName": sort_key_name, "KeyType": "RANGE"})
-        attr_definitions_map[sort_key_name] = sort_key_type or "S"
+        define(sort_key_name, sort_key_type)
 
-    params: Dict[str, Any] = {
-        "TableName": table_name,
-        "KeySchema": key_schema,
-    }
+    params: Dict[str, Any] = {"TableName": table_name, "KeySchema": key_schema}
+    provisioned = billing_mode == "PROVISIONED"
+    throughput = {"ReadCapacityUnits": read_capacity_units or 5, "WriteCapacityUnits": write_capacity_units or 5}
+    params["BillingMode"] = "PROVISIONED" if provisioned else "PAY_PER_REQUEST"
+    if provisioned:
+        params["ProvisionedThroughput"] = throughput
 
-    if billing_mode == "PROVISIONED":
-        params["BillingMode"] = "PROVISIONED"
-        params["ProvisionedThroughput"] = {
-            "ReadCapacityUnits": read_capacity_units or 5,
-            "WriteCapacityUnits": write_capacity_units or 5,
-        }
-    else:
-        params["BillingMode"] = "PAY_PER_REQUEST"
-
-    # Process Global Secondary Indexes (GSI)
     if gsis:
         gsi_list = []
         for g in gsis:
-            g_name = g["name"].strip()
-            g_pk = g["partition_key"].strip()
-            g_pk_type = g.get("partition_key_type", "S")
-            g_sk = g.get("sort_key", "").strip() if g.get("sort_key") else None
-            g_sk_type = g.get("sort_key_type", "S")
-            proj_type = g.get("projection_type", "ALL")
-
-            attr_definitions_map[g_pk] = g_pk_type
-            g_schema = [{"AttributeName": g_pk, "KeyType": "HASH"}]
-            if g_sk:
-                attr_definitions_map[g_sk] = g_sk_type
-                g_schema.append({"AttributeName": g_sk, "KeyType": "RANGE"})
-
-            gsi_def: Dict[str, Any] = {
-                "IndexName": g_name,
-                "KeySchema": g_schema,
-                "Projection": {"ProjectionType": proj_type},
-            }
-            if billing_mode == "PROVISIONED":
-                gsi_def["ProvisionedThroughput"] = {
-                    "ReadCapacityUnits": read_capacity_units or 5,
-                    "WriteCapacityUnits": write_capacity_units or 5,
-                }
-            gsi_list.append(gsi_def)
+            schema = [{"AttributeName": g["partition_key"].strip(), "KeyType": "HASH"}]
+            define(g["partition_key"].strip(), g.get("partition_key_type"))
+            if g.get("sort_key"):
+                schema.append({"AttributeName": g["sort_key"].strip(), "KeyType": "RANGE"})
+                define(g["sort_key"].strip(), g.get("sort_key_type"))
+            gsi: Dict[str, Any] = {"IndexName": g["name"].strip(), "KeySchema": schema, "Projection": _projection(g)}
+            if provisioned:
+                gsi["ProvisionedThroughput"] = throughput
+            gsi_list.append(gsi)
         params["GlobalSecondaryIndexes"] = gsi_list
 
-    # Process Local Secondary Indexes (LSI)
-    if lsis and sort_key_name:
+    if lsis:
+        # LSI はテーブルと同じパーティションキー ＋ 別のソートキー。テーブルにソートキーが無ければ DynamoDB がエラーにする
         lsi_list = []
         for l in lsis:
-            l_name = l["name"].strip()
-            l_sk = l["sort_key"].strip()
-            l_sk_type = l.get("sort_key_type", "S")
-            proj_type = l.get("projection_type", "ALL")
-
-            attr_definitions_map[l_sk] = l_sk_type
+            define(l["sort_key"].strip(), l.get("sort_key_type"))
             lsi_list.append({
-                "IndexName": l_name,
+                "IndexName": l["name"].strip(),
                 "KeySchema": [
                     {"AttributeName": partition_key_name, "KeyType": "HASH"},
-                    {"AttributeName": l_sk, "KeyType": "RANGE"},
+                    {"AttributeName": l["sort_key"].strip(), "KeyType": "RANGE"},
                 ],
-                "Projection": {"ProjectionType": proj_type},
+                "Projection": _projection(l),
             })
         params["LocalSecondaryIndexes"] = lsi_list
 
-    params["AttributeDefinitions"] = [
-        {"AttributeName": k, "AttributeType": v} for k, v in attr_definitions_map.items()
-    ]
-
+    params["AttributeDefinitions"] = [{"AttributeName": k, "AttributeType": v} for k, v in attr_defs.items()]
     res = dynamo.create_table(**params)
-    return res.get("TableDescription", {})
+    return boto_safe(res.get("TableDescription", {}))
 
-def scan_table_items(table_name: str) -> List[Dict]:
-    """Scans and returns all items with parsed attributes and data types."""
+
+def boto_safe(obj: Any) -> Any:
+    """datetime / Decimal / bytes を JSON にできる形へ"""
+    if isinstance(obj, dict):
+        return {k: boto_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [boto_safe(v) for v in obj]
+    if isinstance(obj, (bytes, bytearray)):
+        return base64.b64encode(bytes(obj)).decode()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return obj
+
+
+def delete_table(table_name: str) -> Dict:
+    get_client("dynamodb").delete_table(TableName=table_name)
+    return {"message": f"Table '{table_name}' deleted"}
+
+
+def _key_types(table_name: str, index_name: Optional[str] = None) -> Tuple[Dict[str, str], List[str]]:
+    """テーブル（またはインデックス）のキー属性名 → 型、キー属性名の並び（HASH, RANGE）"""
+    desc = get_client("dynamodb").describe_table(TableName=table_name)["Table"]
+    types = {a["AttributeName"]: a["AttributeType"] for a in desc.get("AttributeDefinitions", [])}
+    schema = desc.get("KeySchema", [])
+    if index_name:
+        for ix in desc.get("GlobalSecondaryIndexes", []) + desc.get("LocalSecondaryIndexes", []):
+            if ix.get("IndexName") == index_name:
+                schema = ix.get("KeySchema", [])
+                break
+    names = [k["AttributeName"] for k in sorted(schema, key=lambda k: 0 if k["KeyType"] == "HASH" else 1)]
+    return types, names
+
+
+# --------------------------------------------------------------------------
+# アイテム
+# --------------------------------------------------------------------------
+def scan_table_items(table_name: str, max_items: int = SCAN_MAX_ITEMS) -> List[Dict]:
+    """Scan をページングしながら最大 max_items 件取得する"""
     dynamo = get_client("dynamodb")
-    res = dynamo.scan(TableName=table_name)
-    raw_items = res.get("Items", [])
+    items: List[Dict] = []
+    kwargs: Dict[str, Any] = {"TableName": table_name}
+    while True:
+        res = dynamo.scan(**kwargs)
+        for it in res.get("Items", []):
+            items.append(_format_item(it))
+            if len(items) >= max_items:
+                return items
+        if not res.get("LastEvaluatedKey"):
+            return items
+        kwargs["ExclusiveStartKey"] = res["LastEvaluatedKey"]
 
-    formatted_items = []
-    for item in raw_items:
-        parsed_attributes = {}
-        for k, v in item.items():
-            data_type = list(v.keys())[0]
-            raw_val = list(v.values())[0]
-
-            if data_type == "BOOL":
-                val = bool(raw_val)
-            elif data_type == "N":
-                val = float(raw_val) if "." in str(raw_val) else int(raw_val)
-            elif data_type == "NULL":
-                val = None
-            else:
-                val = str(raw_val)
-
-            parsed_attributes[k] = {
-                "type": data_type,
-                "value": val,
-                "raw_dynamo": v,
-            }
-
-        formatted_items.append({
-            "_raw": item,
-            "attributes": parsed_attributes,
-        })
-
-    return formatted_items
 
 def query_table_items(
     table_name: str,
@@ -231,102 +449,62 @@ def query_table_items(
     index_name: Optional[str] = None,
 ) -> List[Dict]:
     """
-    Executes a Query operation against a table or a Secondary Index.
+    Query（キーの等価条件）。値の型はテーブル / インデックスのキー定義から決める。
+    値に DynamoDB JSON（{"N": "1"} など）を渡せばそのまま使う。
     """
+    types, _ = _key_types(table_name, index_name)
     dynamo = get_client("dynamodb")
-    params: Dict[str, Any] = {"TableName": table_name}
+    parts, names, values = [], {}, {}
+    for i, (k, v) in enumerate(key_conditions.items()):
+        names[f"#k{i}"] = k
+        if isinstance(v, dict) and len(v) == 1 and next(iter(v)) in ATTRIBUTE_TYPES:
+            av = ddb_json_to_boto(v, k)
+        else:
+            av = ddb_json_to_boto(form_value_to_ddb_json(types.get(k, "S"), v, k), k)
+        values[f":v{i}"] = av
+        parts.append(f"#k{i} = :v{i}")
+    params: Dict[str, Any] = {
+        "TableName": table_name,
+        "KeyConditionExpression": " AND ".join(parts),
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
     if index_name:
         params["IndexName"] = index_name
+    items: List[Dict] = []
+    while True:
+        res = dynamo.query(**params)
+        items.extend(_format_item(it) for it in res.get("Items", []))
+        if not res.get("LastEvaluatedKey") or len(items) >= SCAN_MAX_ITEMS:
+            return items[:SCAN_MAX_ITEMS]
+        params["ExclusiveStartKey"] = res["LastEvaluatedKey"]
 
-    expr_parts = []
-    expr_names = {}
-    expr_values = {}
 
-    idx = 0
-    for k, v in key_conditions.items():
-        name_placeholder = f"#k{idx}"
-        val_placeholder = f":v{idx}"
-        expr_parts.append(f"{name_placeholder} = {val_placeholder}")
-        expr_names[name_placeholder] = k
+def attributes_to_item(attributes: List[Dict]) -> Dict[str, Dict[str, Any]]:
+    """画面の行（name / type / value）から DynamoDB JSON のアイテムを作る"""
+    item: Dict[str, Dict[str, Any]] = {}
+    for attr in attributes:
+        name = (attr.get("name") or "").strip()
+        if not name:
+            continue
+        if name in item:
+            raise ItemFormatError(f"属性名「{name}」が重複しています")
+        item[name] = form_value_to_ddb_json(attr.get("type", "S"), attr.get("value", ""), name)
+    return item
 
-        # Guess or format value
-        if isinstance(v, (int, float)):
-            expr_values[val_placeholder] = {"N": str(v)}
-        elif isinstance(v, bool):
-            expr_values[val_placeholder] = {"BOOL": v}
-        else:
-            expr_values[val_placeholder] = {"S": str(v)}
-        idx += 1
 
-    params["KeyConditionExpression"] = " AND ".join(expr_parts)
-    params["ExpressionAttributeNames"] = expr_names
-    params["ExpressionAttributeValues"] = expr_values
+def put_item(table_name: str, item: Dict[str, Any]) -> Dict:
+    """PutItem（同じキーがあれば丸ごと置き換え）。item は DynamoDB JSON"""
+    get_client("dynamodb").put_item(TableName=table_name, Item=item_to_boto(item))
+    return {"message": "アイテムを保存しました", "item": item}
 
-    res = dynamo.query(**params)
-    formatted = []
-    for item in res.get("Items", []):
-        parsed = {}
-        for k, v in item.items():
-            dtype = list(v.keys())[0]
-            rval = list(v.values())[0]
-            parsed[k] = {"type": dtype, "value": rval, "raw_dynamo": v}
-        formatted.append({"_raw": item, "attributes": parsed})
-    return formatted
-
-def format_value_to_dynamo(data_type: str, value: Any) -> Dict:
-    """Converts a data type and python value into DynamoDB AttributeValue format."""
-    data_type = data_type.upper()
-    val_str = str(value)
-
-    if data_type == "S":
-        return {"S": val_str}
-    elif data_type == "N":
-        return {"N": str(val_str).strip() or "0"}
-    elif data_type == "BOOL":
-        return {"BOOL": str(value).lower() in ("true", "1", "yes")}
-    elif data_type == "L":
-        try:
-            arr = json.loads(val_str) if val_str.startswith("[") else [x.strip() for x in val_str.split(",")]
-            return {"L": [{"S": str(x)} for x in arr]}
-        except Exception:
-            return {"L": [{"S": val_str}]}
-    elif data_type == "M":
-        try:
-            obj = json.loads(val_str)
-            return {"M": {k: {"S": str(v)} for k, v in obj.items()}}
-        except Exception:
-            return {"M": {"raw": {"S": val_str}}}
-    elif data_type == "NULL":
-        return {"NULL": True}
-    else:
-        return {"S": val_str}
 
 def put_or_update_item(table_name: str, attributes: List[Dict]) -> Dict:
-    """Puts or updates an item in DynamoDB with exact data types."""
-    dynamo = get_client("dynamodb")
-    item_payload = {}
-    for attr in attributes:
-        name = attr["name"].strip()
-        data_type = attr.get("type", "S")
-        val = attr.get("value", "")
-        if name:
-            item_payload[name] = format_value_to_dynamo(data_type, val)
+    """画面の行形式で PutItem する（互換用）"""
+    return put_item(table_name, attributes_to_item(attributes))
 
-    # DB/テーブル設計（schema_service）で管理しているテーブルなら、型・必須・外部キーを検証
-    from app.services.schema_service import validate_item
-    validate_item(table_name, item_payload)
-
-    dynamo.put_item(
-        TableName=table_name,
-        Item=item_payload,
-    )
-    return {"message": "アイテムを保存しました", "item": item_payload}
 
 def delete_table_item(table_name: str, key_attributes: Dict[str, Dict]) -> Dict:
-    """Deletes an item by its primary key."""
-    dynamo = get_client("dynamodb")
-    dynamo.delete_item(
-        TableName=table_name,
-        Key=key_attributes,
-    )
+    """DeleteItem。key_attributes は DynamoDB JSON のキー（例: {"id": {"S": "1"}}）"""
+    get_client("dynamodb").delete_item(TableName=table_name, Key=item_to_boto(key_attributes))
     return {"message": "アイテムを削除しました"}

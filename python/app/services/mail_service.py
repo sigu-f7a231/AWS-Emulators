@@ -150,6 +150,7 @@ def send_email(
     source: str = "direct",
     source_detail: str = "",
     delivery_mode: Optional[str] = None,
+    from_name: Optional[str] = None,
 ) -> Dict:
     """
     Sends an email:
@@ -159,6 +160,7 @@ def send_email(
     """
     delivery_mode = ensure_delivery_mode(delivery_mode)
     smtp_cfg = load_smtp_config()
+    from email.utils import formataddr
     smtp_host = smtp_cfg.get("smtp_host", "").strip()
     smtp_port = int(smtp_cfg.get("smtp_port", 587))
     smtp_user = smtp_cfg.get("smtp_user", "").strip()
@@ -177,7 +179,7 @@ def send_email(
     if use_smtp:
         try:
             msg = MIMEMultipart()
-            msg["From"] = smtp_from
+            msg["From"] = formataddr((from_name, smtp_from), charset="utf-8") if from_name else smtp_from
             msg["To"] = to_address
             msg["Subject"] = Header(subject, "utf-8")
             msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -192,7 +194,7 @@ def send_email(
     email_record = {
         "id": f"mail-{len(emails) + 1}",
         "to": to_address,
-        "from": smtp_from,
+        "from": f"{from_name} <{smtp_from}>" if from_name else smtp_from,
         "subject": subject,
         "body": body,
         "timestamp": datetime.now().isoformat(),

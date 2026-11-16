@@ -9,6 +9,9 @@ AWS_CA_BUNDLE = os.getenv("AWS_CA_BUNDLE", None)
 # Port of FastAPI backend
 PORT = int(os.getenv("PORT", "8000"))
 
-# アプリのデータ（送信メール履歴・SMTP 設定・DynamoDB のテーブル定義）の保存先。
+# アプリのデータ（送信メール履歴・SMTP 設定）の保存先。
 # コンテナ内のパスでボリュームもバインドマウントもしていないため、コンテナを削除するとデータも消える。
 DATA_DIR = os.getenv("APP_DATA_DIR", "/data")
+
+# 確認メール・通知メール内のリンク（承認 / 配信停止）の URL のベース。ブラウザから開ける Web UI の URL
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:3000").rstrip("/")

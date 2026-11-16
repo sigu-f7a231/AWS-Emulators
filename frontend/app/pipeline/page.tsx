@@ -1,13 +1,15 @@
 // SNS-SQS パイプライン管理ページ（サーバーコンポーネント）
 import SmtpSettingsCard from '../components/SmtpSettingsCard';
 import DeliveryModeForm from '../components/DeliveryModeForm';
+import SubscriptionStatus from '../components/SubscriptionStatus';
+import ConfirmSubmitButton from '../components/ConfirmSubmitButton';
 import { getSmtpStatus } from '../lib/smtp';
 
 interface Topic { arn: string; name: string; }
 interface Queue { url: string; name: string; }
 interface Pipeline {
   id: string; topic_arn: string; topic_name: string;
-  subscriptions: { type: 'email' | 'sqs'; endpoint: string; arn?: string }[];
+  subscriptions: { type: 'email' | 'sqs'; endpoint: string; arn?: string; status?: string }[];
 }
 
 const BACKEND = process.env.BACKEND_INTERNAL_URL || 'http://python:8000';
@@ -80,7 +82,7 @@ export default async function PipelinePage({
           🔗 パイプライン一覧 ({pipelines.length})
         </h2>
         {pipelines.length === 0 ? (
-          <p style={{ color: 'var(--text-muted)' }}>パイプラインがありません。SNSページでサブスクリプションを追加してください。</p>
+          <p style={{ color: 'var(--text-muted)' }}>パイプラインがありません。SNS 画面でトピックとサブスクリプションを作成してください。</p>
         ) : pipelines.map((p) => (
           <div key={p.id} style={{
             padding: '16px', backgroundColor: 'var(--bg-primary)',
@@ -100,22 +102,27 @@ export default async function PipelinePage({
                     {s.type === 'email' ? '📧 email' : '📬 sqs'}
                   </span>
                   <span style={{ color: '#f8fafc' }}>{s.endpoint}</span>
+                  {s.type === 'email' && <SubscriptionStatus status={s.status} readOnly />}
+                  {s.arn && (
+                    <form method="POST" action="/api/pipeline/unsubscribe" style={{ marginLeft: 'auto' }}>
+                      <input type="hidden" name="subscription_arn" value={s.arn} />
+                      <input type="hidden" name="label" value={`${p.topic_name} → ${s.endpoint}`} />
+                      <ConfirmSubmitButton
+                        message={`「${p.topic_name}」から「${s.endpoint}」（${s.type === 'email' ? 'Eメール' : 'SQS'}）の紐付けを解除しますか？\n解除すると、このトピックのメッセージは届かなくなります。`}
+                        style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', cursor: 'pointer' }}
+                      >🔗 解除</ConfirmSubmitButton>
+                    </form>
+                  )}
                 </div>
               ))}
             </div>
 
-            {/* メールサブスクリプション追加フォーム */}
-            <details style={{ marginTop: '12px' }}>
-              <summary style={{ cursor: 'pointer', fontSize: '13px', color: 'var(--text-muted)' }}>
-                ➕ メールアドレスを追加
-              </summary>
-              <form method="POST" action="/api/sns/subscribe" style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
-                <input type="hidden" name="topic_arn" value={p.topic_arn} />
-                <input type="hidden" name="redirect_pipeline" value="1" />
-                <input name="email" type="email" placeholder="メールアドレス" style={{ flex: 1 }} />
-                <button type="submit" className="btn-primary" style={{ whiteSpace: 'nowrap' }}>登録</button>
-              </form>
-            </details>
+            {/* メールアドレスの購読は SNS 画面で作成する（AWS コンソールと同じ流れ） */}
+            <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-muted)' }}>
+              ✉️ メールアドレスの購読は{' '}
+              <a href={`/sns?topic=${encodeURIComponent(p.topic_arn)}`} style={{ color: 'var(--aws-orange)' }}>SNS 画面でサブスクリプションを作成</a>
+              {' '}してください（承認待ちの確認メールの再送も SNS 画面で行えます）。
+            </p>
 
             {/* SQS サブスクリプション追加 */}
             <details style={{ marginTop: '8px' }}>

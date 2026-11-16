@@ -23,6 +23,8 @@ export async function POST(req: NextRequest) {
     }
     const d = await res.json().catch(() => ({}));
     const mails: { status?: string; to?: string; error?: string }[] = d.dispatched_emails || [];
+    const pendingCount: number = (d.skipped_pending || []).length;
+    const pendingNote = pendingCount ? `、承認待ち ${pendingCount} 件には送っていません` : '';
     const failed = mails.filter(m => (m.status || '').startsWith('smtp_error'));
     const viaSmtp = mails.filter(m => (m.status || '').startsWith('delivered_smtp')).length;
     if (failed.length > 0) {
@@ -30,10 +32,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.redirect(new URL(`/pipeline?err=${encodeURIComponent(detail)}`, req.url), 303);
     }
     const msg = mails.length === 0
-      ? 'ブロードキャストを配信しました（メールサブスクライバーなし）'
+      ? `ブロードキャストを配信しました（承認済みのメール購読なし${pendingNote}）`
       : viaSmtp > 0
-      ? `ブロードキャストを配信しました（メール ${viaSmtp} 件を SMTP で送信）`
-      : `ブロードキャストを配信しました（メール ${mails.length} 件を擬似送信・Mailbox に記録）`;
+      ? `ブロードキャストを配信しました（メール ${viaSmtp} 件を SMTP で送信${pendingNote}）`
+      : `ブロードキャストを配信しました（メール ${mails.length} 件を擬似送信・Mailbox に記録${pendingNote}）`;
     return NextResponse.redirect(new URL(`/pipeline?msg=${encodeURIComponent(msg)}`, req.url), 303);
   } catch (e: any) {
     return NextResponse.redirect(new URL(`/pipeline?err=${encodeURIComponent(e.message)}`, req.url), 303);

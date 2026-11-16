@@ -1,41 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
+const B = process.env.BACKEND_INTERNAL_URL || 'http://python:8000';
 
-const BACKEND = process.env.BACKEND_INTERNAL_URL || 'http://python:8000';
-
+// アイテム削除（DeleteItem）。key_json はキー属性だけの DynamoDB JSON（例: {"id":{"S":"1"}}）
 export async function POST(req: NextRequest) {
   const form = await req.formData();
   const table_name = form.get('table_name') as string;
-  const pk_name = form.get('pk_name') as string;
-  const pk_type = form.get('pk_type') as string;
-  const pk_value = form.get('pk_value') as string;
-  const sk_name = form.get('sk_name') as string | null;
-  const sk_type = form.get('sk_type') as string | null;
-  const sk_value = form.get('sk_value') as string | null;
+  const back = (q: Record<string, string>) =>
+    NextResponse.redirect(new URL(`/dynamodb/${encodeURIComponent(table_name)}?${new URLSearchParams(q)}`, req.url), 303);
 
-  const keyAttributes: Record<string, Record<string, unknown>> = {
-    [pk_name]: { [pk_type]: pk_type === 'N' ? pk_value : pk_value },
-  };
-  if (sk_name && sk_value) {
-    keyAttributes[sk_name] = { [sk_type || 'S']: sk_value };
+  let key_attributes: unknown;
+  try { key_attributes = JSON.parse((form.get('key_json') as string) || ''); } catch {
+    return back({ err: '削除するアイテムのキーが不正です' });
   }
-
   try {
-    const res = await fetch(`${BACKEND}/api/dynamodb/item`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ table_name, key_attributes: keyAttributes }),
+    const res = await fetch(`${B}/api/dynamodb/item`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table_name, key_attributes }),
     });
-
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const p = new URLSearchParams({ err: data.detail || '削除に失敗しました' });
-      return NextResponse.redirect(new URL(`/dynamodb/${encodeURIComponent(table_name)}?${p}`, req.url));
+      const d = await res.json().catch(() => ({}));
+      return back({ err: typeof d.detail === 'string' ? d.detail : '削除に失敗しました' });
     }
-
-    const p = new URLSearchParams({ msg: 'アイテムを削除しました' });
-    return NextResponse.redirect(new URL(`/dynamodb/${encodeURIComponent(table_name)}?${p}`, req.url));
+    return back({ msg: 'アイテムを削除しました' });
   } catch (e: any) {
-    const p = new URLSearchParams({ err: e.message || '接続エラー' });
-    return NextResponse.redirect(new URL(`/dynamodb/${encodeURIComponent(table_name)}?${p}`, req.url));
+    return back({ err: e.message || '接続エラー' });
   }
 }
